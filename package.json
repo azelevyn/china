@@ -1,14 +1,13 @@
 {
   "name": "usdt-sell-bot",
   "version": "1.0.0",
-  "description": "Telegram bot for selling USDT via CoinPayments",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "coinpayments": "^1.0.0",
-    "dotenv": "^16.4.5",
+    "dotenv": "^16.0.3",
     "express": "^4.19.2",
     "node-telegram-bot-api": "^0.61.0"
   }
