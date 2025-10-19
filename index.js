@@ -3,70 +3,64 @@ const TelegramBot = require('node-telegram-bot-api');
 const CoinPayments = require('coinpayments');
 const express = require('express');
 const bodyParser = require('body-parser');
-const { Markup } = require('telegraf');
 
 const TOKEN = process.env.TELEGRAM_TOKEN;
 const bot = new TelegramBot(TOKEN, { polling: true });
 
-// Initialize CoinPayments
+// ✅ Inline keyboard helper
+const Markup = {
+  inlineKeyboard: (buttons) => ({ reply_markup: { inline_keyboard: buttons } }),
+  button: {
+    url: (text, url) => ({ text, url }),
+    callback: (text, data) => ({ text, callback_data: data })
+  }
+};
+
+// ✅ CoinPayments setup
 const cpClient = new CoinPayments({
   key: '7b4eaa9e7643e8f59a104ddc12062ac16d653de6e5cbffd1ea408cd9f2f8e3d7',
   secret: '3fb100ea69a1d9dC600237dbb65A48df3479ec426056aC61D93Feb55c258D6cC'
 });
 
-// --- In-memory session (for demo) ---
+// ✅ Simple session memory
 const sessions = {};
-const session = (chatId) => (sessions[chatId] ||= {});
+const session = (id) => (sessions[id] ||= {});
 
-// --- Exchange Rates ---
+// ✅ Rates
 const rates = {
   USD_TO_EUR: 0.89,
   USDT_TO_GBP: 0.77,
   USD_TO_USDT: 1.08
 };
 
-// --- INTRO MESSAGE ---
+// ✅ Intro & Help Text
 const introText = `
 💸 *Welcome to the USDT Selling Bot!*
 
-This bot allows you to sell your USDT safely and quickly.  
-You can choose to receive payment via multiple fiat options such as:
+Sell your USDT easily and receive money via:
 *Wise, Revolut, PayPal, Bank Transfer, Skrill/Neteller, Visa/Mastercard, Payeer, or Alipay.*
 
-✅ *Minimum amount:* 25 USDT  
-✅ *Maximum amount:* 50,000 USDT  
-✅ *Supported Networks:* BEP20, TRC20, ERC20  
-✅ *Fast, secure & transparent process.*
+✅ *Minimum:* 25 USDT
+✅ *Maximum:* 50,000 USDT
+✅ *Networks:* BEP20 / TRC20 / ERC20
+✅ *Fast & Secure via CoinPayments*
 
-Simply press “Start Selling” to begin!
-
-Use /help for instructions and FAQs.
+Press “Start Selling” to begin.
 `;
 
-// --- HELP / FAQ ---
 const helpText = `
 📖 *FAQ / Help*
 
-1️⃣ *What does this bot do?*  
-It lets you sell your USDT and receive fiat money (USD, EUR, GBP) through your chosen method.
+1️⃣ *What does this bot do?*
+Sell your USDT and receive fiat via your chosen method.
 
-2️⃣ *Minimum & Maximum?*  
-Minimum: 25 USDT  
-Maximum: 50,000 USDT
-
-3️⃣ *Supported Networks?*  
-USDT BEP20, TRC20, ERC20
-
-4️⃣ *Payment Methods?*  
-Wise, Revolut, PayPal, Bank Transfer, Skrill, Neteller, Visa/Mastercard, Payeer, Alipay.
-
-5️⃣ *Is it safe?*  
-Yes — payments are handled securely via CoinPayments.
-
-For assistance, contact admin at: azelchillexa@gmail.com
+2️⃣ *Limits:* 25–50,000 USDT  
+3️⃣ *Networks:* BEP20 / TRC20 / ERC20  
+4️⃣ *Payment Methods:* Wise, Revolut, PayPal, Bank, Skrill, Neteller, Card, Payeer, Alipay  
+5️⃣ *Support:* azelchillexa@gmail.com
 `;
 
-// --- START COMMAND ---
+// ✅ START
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   const name = `${msg.from.first_name || ''} ${msg.from.last_name || ''}`.trim();
@@ -82,7 +76,7 @@ bot.onText(/\/start/, (msg) => {
   });
 });
 
-// --- HELP MENU ---
+// ✅ Handle Menu
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
   const data = query.data;
@@ -90,11 +84,10 @@ bot.on('callback_query', async (query) => {
 
   switch (data) {
     case 'HELP':
-      await bot.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
-      break;
+      return bot.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
 
     case 'SELL_USDT':
-      await bot.sendMessage(chatId, 'Do you want to sell your USDT?', {
+      return bot.sendMessage(chatId, 'Do you want to sell your USDT?', {
         reply_markup: {
           inline_keyboard: [
             [{ text: '✅ YES', callback_data: 'YES_SELL' }],
@@ -102,15 +95,13 @@ bot.on('callback_query', async (query) => {
           ]
         }
       });
-      break;
 
     case 'NO_SELL':
-      await bot.sendMessage(chatId, 'Okay! You can start anytime by using /start 😊');
-      break;
+      return bot.sendMessage(chatId, 'Okay! You can start anytime by typing /start 😊');
 
     case 'YES_SELL':
-      await bot.sendMessage(chatId, `💱 Current Rates:\n\nUSD → EUR = ${rates.USD_TO_EUR}\nUSDT → GBP = ${rates.USDT_TO_GBP}\nUSD → USDT = ${rates.USD_TO_USDT}`);
-      await bot.sendMessage(chatId, 'Which currency would you like to receive?', {
+      await bot.sendMessage(chatId, `💱 Current Rates:\nUSD→EUR=${rates.USD_TO_EUR}\nUSDT→GBP=${rates.USDT_TO_GBP}\nUSD→USDT=${rates.USD_TO_USDT}`);
+      return bot.sendMessage(chatId, 'Which currency would you like to receive?', {
         reply_markup: {
           inline_keyboard: [
             [{ text: 'USD', callback_data: 'FIAT_USD' }],
@@ -119,13 +110,12 @@ bot.on('callback_query', async (query) => {
           ]
         }
       });
-      break;
 
     case 'FIAT_USD':
     case 'FIAT_EUR':
     case 'FIAT_GBP':
       s.fiat = data.split('_')[1];
-      await bot.sendMessage(chatId, 'Select your USDT network:', {
+      return bot.sendMessage(chatId, 'Select your USDT network:', {
         reply_markup: {
           inline_keyboard: [
             [{ text: 'BEP20', callback_data: 'NET_BEP20' }],
@@ -134,13 +124,12 @@ bot.on('callback_query', async (query) => {
           ]
         }
       });
-      break;
 
     case 'NET_BEP20':
     case 'NET_TRC20':
     case 'NET_ERC20':
       s.network = data.split('_')[1];
-      await bot.sendMessage(chatId, 'Choose your preferred payment method:', {
+      return bot.sendMessage(chatId, 'Choose your payment method:', {
         reply_markup: {
           inline_keyboard: [
             [{ text: 'Wise', callback_data: 'PAY_WISE' }],
@@ -154,10 +143,9 @@ bot.on('callback_query', async (query) => {
           ]
         }
       });
-      break;
 
     case 'PAY_SKRILL_NETELLER':
-      await bot.sendMessage(chatId, 'Please choose:', {
+      return bot.sendMessage(chatId, 'Please choose one:', {
         reply_markup: {
           inline_keyboard: [
             [{ text: 'Skrill', callback_data: 'PAY_SKRILL' }],
@@ -165,79 +153,60 @@ bot.on('callback_query', async (query) => {
           ]
         }
       });
-      break;
 
     default:
       break;
   }
 });
 
-// --- CAPTURE PAYMENT DETAILS ---
+// ✅ Payment details input
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
-  const data = query.data;
   const s = session(chatId);
+  const method = query.data.replace('PAY_', '');
 
-  if (data.startsWith('PAY_')) {
-    const method = data.split('_')[1];
+  const prompts = {
+    WISE: 'Enter your Wise email or @WiseTag.',
+    REVOLUT: 'Enter your Revolut tag.',
+    PAYPAL: 'Enter your PayPal email.',
+    BANK: 'Enter your bank details:\nFull Name:\nIBAN:\nSWIFT:',
+    SKRILL: 'Enter your Skrill email.',
+    NETELLER: 'Enter your Neteller email.',
+    CARD: 'Enter your card number.',
+    PAYEER: 'Enter your Payeer number.',
+    ALIPAY: 'Enter your Alipay email.'
+  };
+
+  if (prompts[method]) {
     s.method = method;
-
-    let askText = '';
-    switch (method.toUpperCase()) {
-      case 'WISE':
-        askText = 'Please provide your Wise email or @WiseTag.';
-        break;
-      case 'REVOLUT':
-        askText = 'Please provide your Revolut tag.';
-        break;
-      case 'PAYPAL':
-        askText = 'Please provide your PayPal email.';
-        break;
-      case 'BANK':
-        askText = 'Please provide your bank transfer details:\nFull Name:\nIBAN:\nSWIFT:';
-        break;
-      case 'SKRILL':
-      case 'NETELLER':
-        askText = `Please provide your ${method} email.`;
-        break;
-      case 'CARD':
-        askText = 'Please provide your card number.';
-        break;
-      case 'PAYEER':
-        askText = 'Please provide your Payeer number.';
-        break;
-      case 'ALIPAY':
-        askText = 'Please provide your Alipay email.';
-        break;
-    }
-
     s.awaitingDetail = true;
-    await bot.sendMessage(chatId, askText);
+    return bot.sendMessage(chatId, prompts[method]);
   }
 });
 
-// --- HANDLE TEXT INPUT ---
+// ✅ Handle user inputs
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const s = session(chatId);
-  if (s.awaitingDetail && !msg.text.startsWith('/')) {
-    s.details = msg.text;
-    s.awaitingDetail = false;
+  const text = msg.text.trim();
 
-    await bot.sendMessage(chatId, '✅ Received your payment details.');
-    await bot.sendMessage(chatId, 'Enter the amount of USDT you want to sell (min 25, max 50000):');
+  if (s.awaitingDetail && !text.startsWith('/')) {
+    s.details = text;
+    s.awaitingDetail = false;
     s.awaitingAmount = true;
-  } else if (s.awaitingAmount) {
-    const amount = parseFloat(msg.text);
+    return bot.sendMessage(chatId, '✅ Got it! Now enter amount of USDT to sell (25–50000):');
+  }
+
+  if (s.awaitingAmount) {
+    const amount = parseFloat(text);
     if (isNaN(amount) || amount < 25 || amount > 50000) {
-      await bot.sendMessage(chatId, '❌ Invalid amount. Must be between 25 and 50000 USDT.');
-      return;
+      return bot.sendMessage(chatId, '❌ Invalid amount. Please enter between 25–50000 USDT.');
     }
 
     s.amount = amount;
     s.awaitingAmount = false;
 
-    await bot.sendMessage(chatId, 'Generating CoinPayments deposit address...');
+    await bot.sendMessage(chatId, 'Generating CoinPayments address...');
 
     try {
       const tx = await cpClient.createTransaction({
@@ -248,13 +217,15 @@ bot.on('message', async (msg) => {
         item_name: `Sell USDT via ${s.method}`
       });
 
-      await bot.sendMessage(chatId, `✅ Transaction created!\n\nSend *${tx.amount} ${tx.coin}* to the address below:\n\n${tx.address}\n\nYou can also view your payment status here: ${tx.status_url}`, { parse_mode: 'Markdown' });
-
+      await bot.sendMessage(chatId,
+        `✅ Transaction Created!\n\nSend *${tx.amount} ${tx.coin}* to:\n\n${tx.address}\n\n[View Status](${tx.status_url})`,
+        { parse_mode: 'Markdown' }
+      );
     } catch (err) {
       console.error(err);
-      await bot.sendMessage(chatId, `❌ Failed to create transaction: ${err.message}`);
+      await bot.sendMessage(chatId, `❌ Transaction failed: ${err.message}`);
     }
   }
 });
 
-console.log('🤖 Bot is running...');
+console.log('🤖 USDT Sell Bot is running...');
