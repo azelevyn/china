@@ -7,7 +7,7 @@
     "start": "node usdt_exchange_bot.js"
   },
   "dependencies": {
-    "coinpayments": "^3.0.0",
+    "coinpayments": "^2.0.0",
     "dotenv": "^16.4.5",
     "node-telegram-bot-api": "^0.66.0",
     "qrcode": "^1.5.3"
