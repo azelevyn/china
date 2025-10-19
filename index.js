@@ -1,311 +1,256 @@
-// Import necessary libraries
-const TelegramBot = require('node-telegram-bot-api');
-const CoinPayments = require('coinpayments');
 require('dotenv').config();
+const TelegramBot = require('node-telegram-bot-api');
+const Coinpayments = require('coinpayments');
 
-// --- CONFIGURATION ---
-// Retrieve sensitive information from environment variables
-const botToken = process.env.TELEGRAM_BOT_TOKEN;
-const merchantId = process.env.COINPAYMENTS_MERCHANT_ID;
-const publicKey = process.env.COINPAYMENTS_PUBLIC_KEY;
-const privateKey = process.env.COINPAYMENTS_PRIVATE_KEY;
-const buyerRefundEmail = process.env.BUYER_REFUND_EMAIL;
+const TOKEN = process.env.TELEGRAM_TOKEN;
+if (!TOKEN) {
+  console.error('Set TELEGRAM_TOKEN in .env');
+  process.exit(1);
+}
+const bot = new TelegramBot(TOKEN, { polling: true });
 
-// Check for missing essential configuration
-if (!botToken || !merchantId || !publicKey || !privateKey || !buyerRefundEmail) {
-    console.error("CRITICAL ERROR: Missing one or more required environment variables. Please check your .env file.");
-    process.exit(1);
+// CoinPayments client
+const cpClient = new Coinpayments({
+  key: process.env.COINPAYMENTS_PUBLIC,
+  secret: process.env.COINPAYMENTS_PRIVATE
+});
+
+// In-memory state per user (for demo). Use DB in production.
+const state = {};
+
+/*
+  Flow:
+  /start -> greet -> ask: Sell USDT? [YES] [NO]
+  YES -> ask how much USDT -> ask fiat (USD/EUR/GBP) -> ask network (BEP20/TRC20/ERC20)
+         -> ask payment method -> ask payment details -> create coinpayments tx -> show address/invoice
+*/
+
+const RATES_TEXT = `Rate:
+USD TO EUR = 0.89 EUR
+USDT TO GBP = 0.77 GBP
+USD TO USDT = 1.08`;
+
+function startSellFlow(chatId, user) {
+  state[chatId] = { step: 'ask_amount', user };
+  bot.sendMessage(chatId, `${RATES_TEXT}\n\nBerapa banyak USDT yang anda ingin jual? (contoh: 100)`);
 }
 
-// Initialize the Telegram Bot
-const bot = new TelegramBot(botToken, { polling: true });
-
-// Initialize CoinPayments client
-let coinpayments;
-try {
-    coinpayments = new CoinPayments({
-        key: publicKey,
-        secret: privateKey,
-    });
-    console.log("CoinPayments client initialized successfully.");
-} catch (error) {
-    console.error("Failed to initialize CoinPayments client:", error.message);
-    process.exit(1);
+function askFiat(chatId) {
+  const opts = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: 'USD', callback_data: 'FIAT_USD' }, { text: 'EUR', callback_data: 'FIAT_EUR' }, { text: 'GBP', callback_data: 'FIAT_GBP' }]
+      ]
+    }
+  };
+  state[chatId].step = 'ask_fiat';
+  bot.sendMessage(chatId, 'Anda mahu terima dalam fiat mana?', opts);
 }
 
+function askNetwork(chatId) {
+  const opts = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: 'USDT BEP20', callback_data: 'NET_BEP20' }],
+        [{ text: 'USDT TRC20', callback_data: 'NET_TRC20' }],
+        [{ text: 'USDT ERC20', callback_data: 'NET_ERC20' }]
+      ]
+    }
+  };
+  state[chatId].step = 'ask_network';
+  bot.sendMessage(chatId, 'Pilih rangkaian untuk deposit USDT:', opts);
+}
 
-// --- BOT DATA AND STATE MANAGEMENT ---
-// In-memory storage for user states during the transaction process.
-// For production, consider a more persistent storage like a database (e.g., Redis, Firestore).
-const userStates = {};
+function askPaymentMethod(chatId) {
+  const rows = [
+    [{ text: 'Wise', callback_data: 'PM_Wise' }, { text: 'Revolut', callback_data: 'PM_Revolut' }],
+    [{ text: 'PayPal', callback_data: 'PM_PayPal' }, { text: 'Bank Transfer', callback_data: 'PM_Bank' }],
+    [{ text: 'Skrill/Neteller', callback_data: 'PM_Skrill' }, { text: 'Visa/Mastercard', callback_data: 'PM_Card' }],
+    [{ text: 'Payeer', callback_data: 'PM_Payeer' }, { text: 'Alipay', callback_data: 'PM_Alipay' }]
+  ];
+  state[chatId].step = 'ask_payment_method';
+  bot.sendMessage(chatId, 'Pilih kaedah pembayaran pilihan anda:', { reply_markup: { inline_keyboard: rows } });
+}
 
-// Exchange Rates (can be updated dynamically from an API in a real application)
-const exchangeRates = {
-    'USD': 0.89, // 1 USD to EUR
-    'GBP': 0.77, // 1 USDT to GBP
-    'USDT': 1.08, // 1 USD to USDT (This seems inverted, usually it's 1 USDT to USD. Assuming 1 USDT = 1.08 USD for this logic)
-};
+function createCoinpaymentsTx(chatId) {
+  const s = state[chatId];
+  // Safety checks
+  if (!s || !s.amount_usdt || !s.network || !s.fiat_currency) {
+    return bot.sendMessage(chatId, 'Maklumat tidak lengkap. Sila mula semula dengan /start.');
+  }
 
-// --- HELPER FUNCTIONS ---
-/**
- * Resets a user's state, clearing any stored data.
- * @param {number} userId The Telegram user ID.
- */
-const resetUserState = (userId) => {
-    delete userStates[userId];
-    console.log(`State reset for user ${userId}`);
-};
+  // Map selected network to CoinPayments currency codes.
+  // NOTE: Sesuaikan kod ini jika CoinPayments anda menggunakan code yang berbeza (contoh: 'USDT.TRC20' / 'USDT.ERC20' / 'USDT.BEP20')
+  const networkMap = {
+    BEP20: 'USDT.BEP20',   // contoh label; sila semak dashboard CoinPayments anda
+    TRC20: 'USDT.TRC20',
+    ERC20: 'USDT.ERC20'
+  };
+  const currency2 = networkMap[s.network];
+  if (!currency2) {
+    return bot.sendMessage(chatId, 'Rangkaian tidak disokong. Sila hubungi admin.');
+  }
 
-/**
- * Generates a summary of the user's choices before creating the transaction.
- * @param {object} state The user's current state object.
- * @returns {string} A formatted summary string.
- */
-const getTransactionSummary = (state) => {
-    const receiveAmount = (state.amount / exchangeRates.USDT).toFixed(2); // Example calculation
-    return `
-Please confirm your transaction details:
+  // Ask user amount in USDT already captured in s.amount_usdt
+  // We'll create a transaction where currency1 is USD (or chosen fiat) and currency2 is USDT variant.
+  // To compute fiat amount: USD_TO_USDT = 1.08 (given). We assume user provided amount in USDT, so convert to USD if fiat = USD.
+  // Simple conversion: fiatAmount = amount_usdt * priceUsdPerUsdt
+  const USD_PER_USDT = 1.08; // from your rate: USD TO USDT = 1.08 (i.e. 1 USDT = 1.08 USD)
+  let fiatAmountUSD = parseFloat(s.amount_usdt) * USD_PER_USDT;
+  let currency1 = 'USD';
+  if (s.fiat_currency === 'EUR') {
+    // USD -> EUR = 0.89
+    fiatAmountUSD = fiatAmountUSD * 0.89; // This is approximate: apply USD->EUR
+    currency1 = 'EUR';
+  } else if (s.fiat_currency === 'GBP') {
+    // Use USDT TO GBP = 0.77 (we interpret as 1 USDT = 0.77 GBP)
+    currency1 = 'GBP';
+    fiatAmountUSD = parseFloat(s.amount_usdt) * 0.77;
+  } else {
+    currency1 = 'USD';
+    fiatAmountUSD = parseFloat(s.amount_usdt) * USD_PER_USDT;
+  }
 
-- **Amount to Sell:** ${state.amount} USDT
-- **Deposit Network:** ${state.network}
-- **Fiat Currency:** ${state.currency}
-- **You Will Receive (approx.):** ${receiveAmount} ${state.currency}
-- **Payment Method:** ${state.paymentMethod}
-- **Your Details:** ${state.paymentDetails}
+  // Round fiat amount
+  fiatAmountUSD = Math.round((fiatAmountUSD + Number.EPSILON) * 100) / 100;
 
-A payment will be sent to you after the USDT deposit is confirmed.
-    `;
-};
+  bot.sendMessage(chatId, `Mencipta invoice di CoinPayments...\nAnda akan menerima ≈ ${fiatAmountUSD} ${currency1} (bergantung pengesahan & fees). Mohon tunggu...`);
 
+  // createTransaction: create checkout where buyer pays in USDT (currency2) for fiat amount currency1
+  // Perhatikan: parameter currency2 harus sesuai kod CoinPayments (USDT.TRC20 / USDT.ERC20 / ...).
+  // Sila semak kod di dashboard CoinPayments jika berlaku error.
+  const createParams = {
+    currency1: currency1,         // fiat currency we charge (USD/EUR/GBP)
+    currency2: currency2,         // what buyer pays in (USDT on selected network)
+    amount: fiatAmountUSD,        // amount in currency1
+    buyer_email: s.payment_email || undefined,
+    invoice: `sell-usdt-${chatId}-${Date.now()}`,
+    // optional: 'ipn_url' to receive webhook updates
+  };
 
-// --- BOT COMMANDS AND MESSAGE HANDLERS ---
+  cpClient.createTransaction(createParams, (err, tx) => {
+    if (err) {
+      console.error('CoinPayments error:', err);
+      return bot.sendMessage(chatId, `Gagal mencipta transaksi CoinPayments: ${err.message || JSON.stringify(err)}`);
+    }
+    // tx contains address, amount, confirms_needed, timeout, status_url, qrcode_url, etc.
+    s.coinpayments_tx = tx;
+    const msg = [
+      `Invoice created!`,
+      `Please send EXACTLY: ${tx.amount} ${tx.coin} (${tx.address})`,
+      `Status page: ${tx.status_url}`,
+      `QR: ${tx.qrcode_url || 'N/A'}`
+    ].join('\n\n');
 
-// Handler for the /start command
+    bot.sendMessage(chatId, msg);
+    // show admin contact / next steps
+    bot.sendMessage(chatId, `Setelah anda hantar USDT ke alamat di atas, sistem akan mengesan pembayaran. Untuk sebarang kekeliruan hubungi admin.`);
+  });
+}
+
+// Start command
 bot.onText(/\/start/, (msg) => {
-    const userId = msg.chat.id;
-    const firstName = msg.from.first_name || '';
-    const lastName = msg.from.last_name || '';
+  const chatId = msg.chat.id;
+  const first = msg.from.first_name || '';
+  const last = msg.from.last_name || '';
+  const greeting = `Hello ${first} ${last},`;
+  state[chatId] = { step: 'idle', user: msg.from };
 
-    resetUserState(userId); // Ensure a clean state on start
-
-    const welcomeMessage = `
-Hello ${firstName} ${lastName},
-
-Welcome to the USDT Selling Bot.
-My purpose is to help you securely and efficiently sell your USDT for various fiat currencies.
-
-Please use the 'MENU' button below to begin the process.
-    `;
-
-    bot.sendMessage(userId, welcomeMessage, {
-        reply_markup: {
-            keyboard: [
-                [{ text: 'MENU' }]
-            ],
-            resize_keyboard: true,
-            one_time_keyboard: true
-        }
-    });
+  const opts = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: 'YES', callback_data: 'SELL_YES' }, { text: 'NO', callback_data: 'SELL_NO' }]
+      ]
+    }
+  };
+  bot.sendMessage(chatId, `${greeting}\n\nKami membantu anda jual USDT.\nMahu jual USDT sekarang?`, opts);
 });
 
-// Handler for the "MENU" button
-bot.onText(/MENU/, (msg) => {
-    const userId = msg.chat.id;
-    userStates[userId] = { step: 'start' }; // Initialize state
+// Inline button handlers
+bot.on('callback_query', (callbackQuery) => {
+  const data = callbackQuery.data;
+  const chatId = callbackQuery.message.chat.id;
+  const userId = callbackQuery.from.id;
 
-    bot.sendMessage(userId, 'Do you want to sell USDT?', {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: 'YES', callback_data: 'sell_usdt_yes' }],
-                [{ text: 'NO', callback_data: 'sell_usdt_no' }]
-            ]
-        }
-    });
-});
+  // ensure state exists
+  if (!state[chatId]) state[chatId] = { step: 'idle', user: callbackQuery.from };
 
-
-// Handler for all text messages to capture user input based on their state
-bot.on('message', (msg) => {
-    const userId = msg.chat.id;
-    const userState = userStates[userId];
-
-    // Ignore commands or menu button presses handled by other listeners
-    if (msg.text.startsWith('/') || msg.text === 'MENU') {
-        return;
-    }
-
-    if (!userState || !userState.step) {
-        return; // Do nothing if the user is not in a specific process
-    }
-
-    // Capture payment details
-    if (userState.step === 'awaiting_payment_details') {
-        userState.paymentDetails = msg.text;
-        userState.step = 'awaiting_amount';
-        bot.sendMessage(userId, 'Thank you. Now, please enter the amount of USDT you wish to sell (Min: 25, Max: 50,000).');
-    }
-    // Capture amount and create transaction
-    else if (userState.step === 'awaiting_amount') {
-        const amount = parseFloat(msg.text);
-
-        if (isNaN(amount) || amount < 25 || amount > 50000) {
-            bot.sendMessage(userId, 'Invalid amount. Please enter a number between 25 and 50,000.');
-            return;
-        }
-
-        userState.amount = amount;
-        userState.step = 'confirm_transaction';
-
-        const summary = getTransactionSummary(userState);
-        bot.sendMessage(userId, summary, {
-             parse_mode: 'Markdown',
-             reply_markup: {
-                inline_keyboard: [
-                    [{ text: 'Confirm & Get Deposit Address', callback_data: 'confirm_transaction' }],
-                    [{ text: 'Cancel', callback_data: 'cancel_transaction' }]
-                ]
-            }
-        });
-    }
-});
-
-
-// --- CALLBACK QUERY HANDLER (for inline buttons) ---
-
-bot.on('callback_query', async (callbackQuery) => {
-    const msg = callbackQuery.message;
-    const userId = msg.chat.id;
-    const data = callbackQuery.data;
-
-    // Acknowledge the callback
+  if (data === 'SELL_YES') {
     bot.answerCallbackQuery(callbackQuery.id);
+    startSellFlow(chatId, callbackQuery.from);
+    return;
+  }
+  if (data === 'SELL_NO') {
+    bot.answerCallbackQuery(callbackQuery.id, { text: 'Baik — boleh mulakan semula bila-bila masa.' });
+    return;
+  }
 
-    // Ensure user state exists
-    if (!userStates[userId]) {
-        userStates[userId] = { step: 'start' };
-    }
-    const userState = userStates[userId];
+  // fiat selection
+  if (data.startsWith('FIAT_')) {
+    bot.answerCallbackQuery(callbackQuery.id);
+    const fiat = data.split('_')[1];
+    state[chatId].fiat_currency = fiat;
+    bot.sendMessage(chatId, `Anda pilih ${fiat}.`);
+    askNetwork(chatId);
+    return;
+  }
 
+  // network selection
+  if (data.startsWith('NET_')) {
+    bot.answerCallbackQuery(callbackQuery.id);
+    const net = data.split('_')[1]; // BEP20/TRC20/ERC20
+    state[chatId].network = net;
+    bot.sendMessage(chatId, `Rangkaian dipilih: ${net}`);
+    askPaymentMethod(chatId);
+    return;
+  }
 
-    // --- Flow Logic ---
+  // payment method selection
+  if (data.startsWith('PM_')) {
+    bot.answerCallbackQuery(callbackQuery.id);
+    const pm = data.split('_')[1];
+    state[chatId].payment_method = pm;
+    state[chatId].step = 'ask_payment_details';
+    bot.sendMessage(chatId, `Anda pilih ${pm}. Sila hantarkan butiran pembayaran (contoh: email/payee name/IBAN/URL PayPal):`);
+    return;
+  }
 
-    if (data === 'sell_usdt_yes') {
-        userState.step = 'select_currency';
-        const ratesText = `
-Current Exchange Rates:
-- 1 USD = ${exchangeRates.USD} EUR
-- 1 USDT = ${exchangeRates.GBP} GBP
-- 1 USDT = ${exchangeRates.USDT} USD
-        `;
-        bot.sendMessage(userId, `${ratesText}\n\nPlease select your preferred fiat currency:`, {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: 'USD', callback_data: 'currency_USD' }, { text: 'EUR', callback_data: 'currency_EUR' }, { text: 'GBP', callback_data: 'currency_GBP' }]
-                ]
-            }
-        });
-    } else if (data === 'sell_usdt_no' || data === 'cancel_transaction') {
-        bot.sendMessage(userId, 'Transaction cancelled. Thank you for using the bot. Press /start to begin again.');
-        resetUserState(userId);
-    } else if (data.startsWith('currency_')) {
-        userState.currency = data.split('_')[1];
-        userState.step = 'select_network';
-        bot.sendMessage(userId, 'Please select the deposit network:', {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: 'USDT TRC20', callback_data: 'network_USDT.TRC20' }],
-                    [{ text: 'USDT ERC20', callback_data: 'network_USDT.ERC20' }]
-                ]
-            }
-        });
-    } else if (data.startsWith('network_')) {
-        userState.network = data.split('_')[1];
-        userState.step = 'select_payment_method';
-        bot.sendMessage(userId, 'Please select your preferred payment method:', {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: 'Wise', callback_data: 'payment_Wise' }, { text: 'Revolut', callback_data: 'payment_Revolut' }],
-                    [{ text: 'PayPal', callback_data: 'payment_PayPal' }, { text: 'Bank Transfer', callback_data: 'payment_Bank' }],
-                    [{ text: 'Skrill/Neteller', callback_data: 'payment_Skrill' }, { text: 'Visa/Mastercard', callback_data: 'payment_Card' }],
-                    [{ text: 'Payeer', callback_data: 'payment_Payeer' }, { text: 'Alipay', callback_data: 'payment_Alipay' }]
-                ]
-            }
-        });
-    } else if (data.startsWith('payment_')) {
-        const method = data.split('_')[1];
-        userState.paymentMethod = method;
-        userState.step = 'awaiting_payment_details';
-
-        let prompt = '';
-        switch (method) {
-            case 'Wise': prompt = 'Please enter your Wise email or tag:'; break;
-            case 'Revolut': prompt = 'Please enter your Revolut revtag:'; break;
-            case 'PayPal': prompt = 'Please enter your PayPal email:'; break;
-            case 'Bank': prompt = 'Please provide your full IBAN details (Name, IBAN, SWIFT/BIC, Bank Name, Country):'; break;
-            case 'Skrill': prompt = 'Please enter your Skrill or Neteller email:'; break;
-            case 'Card': prompt = 'Please enter your Visa/Mastercard number:'; break;
-            case 'Payeer': prompt = 'Please enter your Payeer account number:'; break;
-            case 'Alipay': prompt = 'Please enter your Alipay email:'; break;
-        }
-        bot.sendMessage(userId, prompt);
-    } else if (data === 'confirm_transaction') {
-        bot.sendMessage(userId, 'Processing your request... Please wait.');
-
-        const transactionOptions = {
-            currency1: 'USDT',
-            currency2: userState.network, // This tells CoinPayments which network to generate an address for
-            amount: userState.amount,
-            buyer_email: buyerRefundEmail,
-            custom: JSON.stringify({ // Store user data for fulfillment
-                telegramId: userId,
-                fiat: userState.currency,
-                method: userState.paymentMethod,
-                details: userState.paymentDetails
-            }),
-            ipn_url: '', // Add your webhook URL here for production
-        };
-
-        try {
-            const result = await coinpayments.createTransaction(transactionOptions);
-            
-            const depositMessage = `
-**Your deposit has been created!**
-
-To complete the transaction, please send exactly **${result.amount} USDT** to the following address:
-
-**Address:**
-\`${result.address}\`
-
-**Status URL:** [Click to view](${result.status_url})
-
-Your fiat payment will be processed once the deposit is confirmed on the blockchain. This may take a few minutes.
-            `;
-
-            bot.sendMessage(userId, depositMessage, { parse_mode: 'Markdown' });
-            // Optionally send the QR code
-            if (result.qrcode_url) {
-                bot.sendPhoto(userId, result.qrcode_url, { caption: 'You can also scan this QR code to send the payment.' });
-            }
-            resetUserState(userId); // Clear state after successful initiation
-
-        } catch (error) {
-            console.error(`CoinPayments API Error for user ${userId}:`, error.message);
-            bot.sendMessage(userId, 'Sorry, an error occurred while creating your transaction. Please try again later.');
-            resetUserState(userId);
-        }
-    }
+  bot.answerCallbackQuery(callbackQuery.id, { text: 'Pilihan tidak dikenali.' });
 });
 
+// Text message handler to collect inputs for stateful steps
+bot.on('message', (msg) => {
+  // ignore messages that are callbacks already handled
+  if (msg.text && msg.text.startsWith('/')) return; // ignore commands here (except /start handled above)
 
-// --- BOT STARTUP AND ERROR HANDLING ---
-console.log('Bot is running...');
+  const chatId = msg.chat.id;
+  if (!state[chatId]) return; // no flow
 
-// Graceful shutdown
-process.on('SIGINT', () => {
-    console.log("Shutting down bot...");
-    process.exit();
-});
-process.on('SIGTERM', () => {
-    console.log("Shutting down bot...");
-    process.exit();
+  const s = state[chatId];
+  if (s.step === 'ask_amount') {
+    // parse amount
+    const val = msg.text.replace(/[^0-9.]/g, '');
+    const amount = parseFloat(val);
+    if (!amount || amount <= 0) {
+      return bot.sendMessage(chatId, 'Sila masukkan jumlah USDT yang sah. Contoh: 100');
+    }
+    s.amount_usdt = amount;
+    s.step = 'amount_received';
+    bot.sendMessage(chatId, `Anda mahu jual ${amount} USDT.`);
+    askFiat(chatId);
+    return;
+  }
+
+  if (s.step === 'ask_payment_details') {
+    s.payment_details = msg.text;
+    // optional: capture email if text looks like an email
+    const emailMatch = msg.text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/);
+    if (emailMatch) s.payment_email = emailMatch[0];
+
+    // All data collected, create coinpayments tx
+    s.step = 'creating_tx';
+    bot.sendMessage(chatId, 'Terima kasih — mencipta invoice CoinPayments sekarang...');
+    createCoinpaymentsTx(chatId);
+    return;
+  }
 });
