@@ -4,9 +4,9 @@ const CoinPayments = require('coinpayments');
 
 // --- BOT AND API INITIALIZATION ---
 
-// Check for essential environment variables
-if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.COINPAYMENTS_PUBLIC_KEY || !process.env.COINPAYMENTS_PRIVATE_KEY) {
-    console.error("FATAL ERROR: Missing required environment variables. Please check your .env file.");
+// Check for essential environment variables, including the new ADMIN_CHAT_ID
+if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.COINPAYMENTS_PUBLIC_KEY || !process.env.COINPAYMENTS_PRIVATE_KEY || !process.env.ADMIN_CHAT_ID) {
+    console.error("FATAL ERROR: Missing required environment variables. Please check your .env file and ensure ADMIN_CHAT_ID is set.");
     process.exit(1);
 }
 
@@ -22,7 +22,8 @@ const coinpayments = new CoinPayments({
 // Set bot commands for the menu button
 bot.setMyCommands([
     { command: 'start', description: '🚀 Start a new transaction' },
-    { command: 'help', description: '❓ How to use this bot (FAQ)' }
+    { command: 'help', description: '❓ How to use this bot (FAQ)' },
+    { command: 'support', description: '💬 Contact a support agent' } // New command
 ]);
 
 
@@ -30,6 +31,7 @@ bot.setMyCommands([
 
 const MERCHANT_ID = '431eb6f352649dfdcde42b2ba8d5b6d8'; // Your Merchant ID
 const BUYER_REFUND_EMAIL = 'azelchillexa@gmail.com'; // Your refund email
+const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID; // New: ID of the admin receiving support requests
 const MIN_USDT = 25;
 const MAX_USDT = 50000;
 const SUPPORT_CONTACT = '@DeanAbdullah'; // REPLACE WITH YOUR SUPPORT USERNAME
@@ -43,6 +45,10 @@ const RATES = {
 
 // In-memory storage for user conversation state
 const userStates = {};
+
+// New: Map to link forwarded admin message ID back to the original user's chat ID
+const adminReplyMap = {};
+
 
 // --- HELPER FUNCTIONS ---
 
@@ -61,6 +67,15 @@ function calculateFiat(usdtAmount, fiatCurrency) {
     return 0;
 }
 
+// Function to get current formatted date and time (24-hour format)
+function getCurrentDateTime() {
+    const now = new Date();
+    // Example: 20 Oct 2025 - 13:43:00
+    const date = now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    const time = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    return `${date} - ${time}`;
+}
+
 
 // --- BOT COMMANDS AND MESSAGE HANDLERS ---
 
@@ -68,11 +83,12 @@ function calculateFiat(usdtAmount, fiatCurrency) {
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
     const firstName = msg.from.first_name || '';
+    const dateTime = getCurrentDateTime(); // Get current date and time
 
     // Reset user state
     userStates[chatId] = {};
 
-    const welcomeMessage = `Hello, *${firstName}*!\n\nWelcome to the USDT Seller Bot. I can help you easily sell your USDT for fiat currency (USD, EUR, GBP).\n\nReady to start?`;
+    const welcomeMessage = `Hello, *${firstName}*!\n\nWelcome to the USDT Seller Bot. Current time: *${dateTime}*.\n\nI can help you easily sell your USDT for fiat currency (USD, EUR, GBP).\n\nReady to start?`;
 
     bot.sendMessage(chatId, welcomeMessage, {
         parse_mode: 'Markdown',
@@ -115,9 +131,30 @@ This bot helps you convert your USDT into USD, EUR, or GBP. Here is the step-by-
 - Once your transaction is confirmed on the blockchain, we will process your fiat payout.
 
 *Need more help?*
-Please write a direct message to our support team: ${SUPPORT_CONTACT}.
+Please write a direct message to our support team using the \`/support\` command.
     `;
     bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
+});
+
+
+// New handler for the /support command
+bot.onText(/\/support/, (msg) => {
+    const chatId = msg.chat.id;
+    // Check if user is already in a transaction flow
+    if (userStates[chatId] && userStates[chatId].awaiting) {
+        bot.sendMessage(chatId, "⚠️ You are currently in the middle of a transaction. Please finish or start a new transaction using `/start` before contacting support.");
+        return;
+    }
+    
+    userStates[chatId] = { awaiting: 'support_message' };
+    bot.sendMessage(chatId, "💬 *Support Message*\n\nPlease type your question or issue in a single message. A support agent will reply to you as soon as possible.", {
+        parse_mode: 'Markdown',
+        reply_markup: {
+            // Use Reply Keyboard to ensure the next message is handled correctly
+            force_reply: true, 
+            selective: true
+        }
+    });
 });
 
 
@@ -130,6 +167,11 @@ bot.on('callback_query', (callbackQuery) => {
     // Initialize state if not present
     if (!userStates[chatId]) {
         userStates[chatId] = {};
+    }
+    
+    // Clear any pending support state if the user clicks a transaction button
+    if (userStates[chatId].awaiting === 'support_message') {
+        delete userStates[chatId].awaiting;
     }
 
     if (data === 'show_help') {
@@ -149,6 +191,7 @@ bot.on('callback_query', (callbackQuery) => {
         });
     } else if (data === 'cancel') {
         bot.sendMessage(chatId, "No problem! Feel free to start again whenever you're ready by sending /start.");
+        delete userStates[chatId]; // Clear all state
     } else if (data.startsWith('fiat_')) {
         const currency = data.split('_')[1];
         userStates[chatId].fiat = currency;
@@ -202,12 +245,12 @@ bot.on('callback_query', (callbackQuery) => {
             case 'skrill':
                 bot.sendMessage(chatId, "Are you using Skrill or Neteller?", {
                    reply_markup: {
-                       inline_keyboard: [
-                           [{ text: "Skrill", callback_data: 'payout_skrill' }],
-                           [{ text: "Neteller", callback_data: 'payout_neteller' }]
-                       ]
+                        inline_keyboard: [
+                            [{ text: "Skrill", callback_data: 'payout_skrill' }],
+                            [{ text: "Neteller", callback_data: 'payout_neteller' }]
+                        ]
                    }
-               });
+                });
                 break;
             case 'card':
                 prompt = 'Please provide your *Visa or Mastercard number*.';
@@ -249,17 +292,69 @@ bot.on('callback_query', (callbackQuery) => {
     bot.answerCallbackQuery(callbackQuery.id);
 });
 
-// Handler for text messages (for amount and payment details)
+// Handler for text messages (for amount, payment details, and support messages)
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
+    const userState = userStates[chatId];
 
-    // Ignore commands
+    // 1. ADMIN REPLY LOGIC
+    if (msg.reply_to_message && chatId.toString() === ADMIN_CHAT_ID) {
+        const forwardedMessageId = msg.reply_to_message.message_id;
+        const originalUserChatId = adminReplyMap[forwardedMessageId];
+
+        if (originalUserChatId) {
+            try {
+                // Send the admin's response back to the original user
+                await bot.sendMessage(originalUserChatId, `*📢 Support Reply from Admin:*\n\n${text}`, { parse_mode: 'Markdown' });
+                await bot.sendMessage(chatId, "✅ Reply successfully sent to the user.");
+                // Remove the mapping after successful reply
+                delete adminReplyMap[forwardedMessageId]; 
+            } catch (e) {
+                console.error("Error sending reply back to user:", e);
+                await bot.sendMessage(chatId, "❌ Error sending reply back to the user. User may have blocked the bot.");
+            }
+        } else {
+            bot.sendMessage(chatId, "I can't match that reply to an active support request.");
+        }
+        return; // Exit message handler if it was an admin reply
+    }
+
+    // Ignore commands (non-admin replies to forwarded messages are also ignored)
     if (!text || text.startsWith('/')) return;
 
-    // Check if we are waiting for a specific input from the user
-    if (userStates[chatId] && userStates[chatId].awaiting) {
-        const awaiting = userStates[chatId].awaiting;
+    // --- USER FLOW LOGIC ---
+
+    if (userState && userState.awaiting === 'support_message') {
+        // 2. USER SENDS SUPPORT MESSAGE
+        
+        const supportText = text;
+        const userInfo = `User ID: ${msg.from.id}, Name: ${msg.from.first_name || ''} ${msg.from.last_name || ''}, Username: @${msg.from.username || 'N/A'}`;
+        const forwardedMessage = `*🚨 NEW SUPPORT REQUEST*\n\nFrom: ${userInfo}\n\n*Message:* \n${supportText}\n\n--- \n_To reply to this user, simply reply to this message._`;
+        
+        try {
+            // Send the request to the admin chat
+            const sentMessage = await bot.sendMessage(ADMIN_CHAT_ID, forwardedMessage, { parse_mode: 'Markdown' });
+
+            // Store the mapping: Admin's message ID -> Original User's Chat ID
+            adminReplyMap[sentMessage.message_id] = chatId;
+
+            // Confirm to the user
+            bot.sendMessage(chatId, "✅ Your message has been sent to support. We will reply to you here as soon as possible. You can use `/start` to begin a transaction while you wait.");
+            
+            delete userStates[chatId]; // Clean up state
+            
+        } catch (error) {
+            console.error("Error forwarding support message:", error);
+            bot.sendMessage(chatId, "❌ Sorry, I couldn't send your message to support right now. Please try again later.");
+        }
+        return; // Exit handler
+    }
+
+
+    // 3. TRANSACTION FLOW LOGIC
+    if (userState && userState.awaiting) {
+        const awaiting = userState.awaiting;
 
         if (awaiting === 'amount') {
             const amount = parseFloat(text);
@@ -267,10 +362,10 @@ bot.on('message', async (msg) => {
                 bot.sendMessage(chatId, `❌ Invalid amount. Please enter a number between ${MIN_USDT} and ${MAX_USDT}.`);
                 return;
             }
-            userStates[chatId].amount = amount;
+            userState.amount = amount;
 
-            const fiatToReceive = calculateFiat(amount, userStates[chatId].fiat);
-            const confirmationMessage = `You will receive approximately *${fiatToReceive.toFixed(2)} ${userStates[chatId].fiat}*.\n\nPlease choose your preferred payment method:`;
+            const fiatToReceive = calculateFiat(amount, userState.fiat);
+            const confirmationMessage = `You will receive approximately *${fiatToReceive.toFixed(2)} ${userState.fiat}*.\n\nPlease choose your preferred payment method:`;
 
             bot.sendMessage(chatId, confirmationMessage, {
                 parse_mode: 'Markdown',
@@ -283,14 +378,14 @@ bot.on('message', async (msg) => {
                     ]
                 }
             });
-            userStates[chatId].awaiting = null; // Wait for button press now
+            userState.awaiting = null; // Wait for button press now
         } else if ([
             'wise_details', 'revolut_details', 'paypal_details', 'card_details', 
             'payeer_details', 'alipay_details', 'skrill_neteller_details', 
             'bank_details_eu', 'bank_details_us'
         ].includes(awaiting)) {
-            userStates[chatId].paymentDetails = text;
-            userStates[chatId].awaiting = null; // Stop waiting for messages
+            userState.paymentDetails = text;
+            userState.awaiting = null; // Stop waiting for messages
             bot.sendMessage(chatId, "⏳ Thank you! Generating your secure deposit address, please wait...");
 
             // --- COINPAYMENTS API CALL ---
@@ -300,24 +395,26 @@ bot.on('message', async (msg) => {
                     'TRC20': 'USDT.TRC20',
                     'ERC20': 'USDT.ERC20'
                 };
-                const coinCurrency = networkMap[userStates[chatId].network];
+                const coinCurrency = networkMap[userState.network];
 
                 const transactionOptions = {
                     currency1: 'USDT',
                     currency2: coinCurrency,
-                    amount: userStates[chatId].amount,
+                    amount: userState.amount,
                     buyer_email: BUYER_REFUND_EMAIL,
-                    custom: `Payout to ${userStates[chatId].paymentMethod}: ${userStates[chatId].paymentDetails}`,
-                    item_name: `Sell ${userStates[chatId].amount} USDT for ${userStates[chatId].fiat}`,
+                    custom: `Payout to ${userState.paymentMethod}: ${userState.paymentDetails}`,
+                    item_name: `Sell ${userState.amount} USDT for ${userState.fiat}`,
                     ipn_url: 'YOUR_IPN_WEBHOOK_URL'
                 };
 
                 const result = await coinpayments.createTransaction(transactionOptions);
 
-                const depositInfo = `✅ *Deposit Address Generated!*\n\nPlease send exactly *${result.amount} USDT* (${userStates[chatId].network}) to the address below:\n\n` +
+                const depositInfo = `✅ *Deposit Address Generated!*\n\nPlease send exactly *${result.amount} USDT* (${userState.network}) to the address below:\n\n` +
                     `\`${result.address}\`\n\n` + // Backticks for easy copying
                     `*Status URL:* [Click to Track](${result.status_url})\n\n` +
-                    `⚠️ *IMPORTANT:* Send only USDT on the ${userStates[chatId].network} network to this address. Sending any other coin or using a different network may result in the loss of your funds.`;
+                    `*Payout Method:* ${userState.paymentMethod}\n` +
+                    `*Payout Details:* \n\`${userState.paymentDetails}\`\n\n` +
+                    `⚠️ *IMPORTANT:* Send only USDT on the ${userState.network} network to this address. Sending any other coin or using a different network may result in the loss of your funds.`;
 
                 bot.sendMessage(chatId, depositInfo, { parse_mode: 'Markdown' });
                 delete userStates[chatId];
