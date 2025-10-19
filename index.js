@@ -1,20 +1,19 @@
-import dotenv from "dotenv";
-import express from "express";
-import CoinPayments from "coinpayments";
-import { Telegraf, Markup } from "telegraf";
+const dotenv = require("dotenv");
+const express = require("express");
+const CoinPayments = require("coinpayments");
+const { Telegraf, Markup } = require("telegraf");
 
 dotenv.config();
 
-// === SETUP ===
 const app = express();
 const PORT = process.env.PORT || 8080;
 const TOKEN = process.env.TELEGRAM_TOKEN;
 
-// Initialize Telegraf bot
 if (!TOKEN) {
   console.error("❌ TELEGRAM_TOKEN not found in .env");
   process.exit(1);
 }
+
 const bot = new Telegraf(TOKEN);
 
 // CoinPayments setup
@@ -23,7 +22,7 @@ const client = new CoinPayments({
   secret: "3fb100ea69a1d9dC600237dbb65A48df3479ec426056aC61D93Feb55c258D6cC",
 });
 
-// Store user states
+// User states
 const userState = {};
 
 // === INTRO ===
@@ -68,7 +67,7 @@ A: CoinPayments handles secure deposit and processing.
 Need more help? Contact support: *azelchillexa@gmail.com*
 `;
 
-// === BOT START ===
+// === START ===
 bot.start((ctx) => {
   const firstName = ctx.from.first_name || "";
   const lastName = ctx.from.last_name || "";
@@ -81,13 +80,12 @@ bot.start((ctx) => {
   );
 });
 
-// === FAQ ===
 bot.action("faq", async (ctx) => {
   await ctx.answerCbQuery();
   await ctx.replyWithMarkdown(faqMessage);
 });
 
-// === SELL USDT ===
+// === SELL USDT FLOW ===
 bot.action("sell_usdt", async (ctx) => {
   await ctx.answerCbQuery();
   await ctx.reply(
@@ -101,7 +99,7 @@ bot.action("sell_usdt", async (ctx) => {
 
 bot.action("cancel_sell", async (ctx) => {
   await ctx.answerCbQuery("Cancelled");
-  await ctx.reply("Transaction cancelled. Type /start to begin again.");
+  await ctx.reply("❌ Cancelled. Type /start to begin again.");
 });
 
 bot.action("confirm_sell", async (ctx) => {
@@ -121,8 +119,7 @@ bot.action("confirm_sell", async (ctx) => {
   );
 });
 
-const fiatOptions = ["usd", "eur", "gbp"];
-fiatOptions.forEach((fiat) => {
+["usd", "eur", "gbp"].forEach((fiat) => {
   bot.action(`fiat_${fiat}`, async (ctx) => {
     await ctx.answerCbQuery();
     userState[ctx.from.id] = { fiat };
@@ -164,7 +161,6 @@ fiatOptions.forEach((fiat) => {
   });
 });
 
-// Skrill or Neteller submenu
 bot.action("pay_skrillneteller", async (ctx) => {
   await ctx.answerCbQuery();
   ctx.reply(
@@ -176,55 +172,47 @@ bot.action("pay_skrillneteller", async (ctx) => {
   );
 });
 
-// === Payment Method Inputs ===
-const paymentPrompts = {
+const prompts = {
   wise: "Please enter your Wise email or @wise tag:",
-  revolut: "Please enter your Revolut tag or revtag:",
   paypal: "Please enter your PayPal email:",
-  bank: "Please enter your Bank details in format:\n\nFirst & Last Name\nIBAN\nSWIFT Code",
+  bank: "Enter: Full Name, IBAN, and SWIFT code:",
   skrill: "Please enter your Skrill email:",
   neteller: "Please enter your Neteller email:",
   card: "Please enter your Card number:",
-  payeer: "Please enter your Payeer Number:",
+  payeer: "Please enter your Payeer number:",
   alipay: "Please enter your Alipay email:",
 };
 
-Object.keys(paymentPrompts).forEach((key) => {
+Object.keys(prompts).forEach((key) => {
   bot.action(`pay_${key}`, async (ctx) => {
     await ctx.answerCbQuery();
     userState[ctx.from.id].method = key;
-    ctx.reply(paymentPrompts[key]);
+    ctx.reply(prompts[key]);
     userState[ctx.from.id].awaitingDetails = true;
   });
 });
 
-// === Handle User Payment Input ===
 bot.on("text", async (ctx) => {
   const state = userState[ctx.from.id];
   if (!state || !state.awaitingDetails) return;
 
-  const amountText = ctx.message.text.trim();
-
+  const text = ctx.message.text.trim();
   if (!state.paymentDetails) {
-    state.paymentDetails = amountText;
+    state.paymentDetails = text;
     state.awaitingDetails = false;
-    ctx.reply(
-      `✅ Got it! Please enter the *amount of USDT* you want to sell (Min: 25, Max: 50000):`,
-      { parse_mode: "Markdown" }
-    );
+    ctx.reply("Enter the amount of USDT you want to sell (25 - 50000):");
     state.awaitingAmount = true;
     return;
   }
 
   if (state.awaitingAmount) {
-    const amount = parseFloat(amountText);
+    const amount = parseFloat(text);
     if (isNaN(amount) || amount < 25 || amount > 50000) {
       return ctx.reply("❌ Invalid amount! Please enter between 25 and 50000 USDT.");
     }
     state.amount = amount;
     state.awaitingAmount = false;
 
-    // === Create CoinPayments transaction ===
     try {
       const txn = await client.createTransaction({
         currency1: "USDT",
@@ -234,19 +222,16 @@ bot.on("text", async (ctx) => {
       });
 
       ctx.replyWithMarkdown(
-        `✅ *Transaction Created!*\n\n💰 *Amount:* ${amount} USDT\n🌐 *Network:* ${state.network.toUpperCase()}\n💳 *Payment:* ${state.method}\n📧 *Details:* ${state.paymentDetails}\n\n➡️ *Send your USDT to this address:*\n\`${txn.address}\`\n\n🔗 [View QR/Transaction Link](${txn.status_url})`
+        `✅ *Transaction Created!*\n\n💰 *Amount:* ${amount} USDT\n🌐 *Network:* ${state.network.toUpperCase()}\n💳 *Payment:* ${state.method}\n📧 *Details:* ${state.paymentDetails}\n\n➡️ *Send your USDT to:*\n\`${txn.address}\`\n\n🔗 [View on CoinPayments](${txn.status_url})`
       );
     } catch (err) {
-      console.error(err);
-      ctx.reply(`❌ Gagal membuat transaksi CoinPayments: ${err.message}`);
+      ctx.reply(`❌ Failed to create CoinPayments transaction: ${err.message}`);
     }
   }
 });
 
-// === EXPRESS SERVER (for Sevalla/keep alive) ===
 app.get("/", (req, res) => res.send("✅ Telegram USDT Sell Bot is running"));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
-// === START BOT ===
 bot.launch();
 console.log("🤖 Bot is running...");
