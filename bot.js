@@ -22,7 +22,7 @@ const coinpayments = new CoinPayments({
 // Set bot commands for the menu button
 bot.setMyCommands([
     { command: 'start', description: '🚀 Start a new transaction' },
-    { command: 'referral', description: '🤝 Check your referral status and link' }, // NEW: Referral command
+    { command: 'referral', description: '🤝 Check your referral status and link' },
     { command: 'help', description: '❓ How to use this bot (FAQ)' },
     { command: 'support', description: '💬 Contact a support agent' }
 ]);
@@ -37,11 +37,16 @@ const MIN_USDT = 25;
 const MAX_USDT = 50000;
 const SUPPORT_CONTACT = '@DeanAbdullah'; // REPLACE WITH YOUR SUPPORT USERNAME
 
-// Conversion Rates
+// Conversion Rates (Rates are simplified for demonstration; in production, use a real-time oracle)
 const RATES = {
-    USDT_TO_USD: 1 / 1.08, // Based on USD TO USDT 1.08
+    // USDT rates
+    USDT_TO_USD: 1 / 1.08, 
     USD_TO_EUR: 0.89,
     USDT_TO_GBP: 0.77,
+
+    // NEW Crypto Rates (Example/Placeholder - based on conversion to USDT equivalent)
+    BTC_TO_USDT: 65000, // Example: 1 BTC = 65000 USDT
+    ETH_TO_USDT: 3500,  // Example: 1 ETH = 3500 USDT
 };
 
 // NEW REFERRAL CONSTANTS
@@ -64,17 +69,30 @@ const adminReplyMap = {};
 
 // --- HELPER FUNCTIONS ---
 
-// Function to calculate the received amount
-function calculateFiat(usdtAmount, fiatCurrency) {
+// Function to calculate the received amount for any crypto
+function calculateFiat(amount, cryptoCurrency, fiatCurrency) {
+    let amountInUSDT;
+
+    if (cryptoCurrency === 'USDT') {
+        amountInUSDT = amount;
+    } else if (cryptoCurrency === 'BTC') {
+        amountInUSDT = amount * RATES.BTC_TO_USDT;
+    } else if (cryptoCurrency === 'ETH') {
+        amountInUSDT = amount * RATES.ETH_TO_USDT;
+    } else {
+        return 0;
+    }
+
     if (fiatCurrency === 'USD') {
-        return usdtAmount * RATES.USDT_TO_USD;
+        return amountInUSDT * RATES.USDT_TO_USD;
     }
     if (fiatCurrency === 'EUR') {
-        const amountInUSD = usdtAmount * RATES.USDT_TO_USD;
+        // Convert total USD equivalent to EUR
+        const amountInUSD = amountInUSDT * RATES.USDT_TO_USD;
         return amountInUSD * RATES.USD_TO_EUR;
     }
     if (fiatCurrency === 'GBP') {
-        return usdtAmount * RATES.USDT_TO_GBP;
+        return amountInUSDT * RATES.USDT_TO_GBP;
     }
     return 0;
 }
@@ -82,25 +100,24 @@ function calculateFiat(usdtAmount, fiatCurrency) {
 // Function to get current formatted date and time (24-hour format)
 function getCurrentDateTime() {
     const now = new Date();
-    // Example: 20 Oct 2025 - 13:43:00
     const date = now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
     const time = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
     return `${date} - ${time}`;
 }
 
-// NEW: Function to initialize referral data if user is new
+// Function to initialize referral data if user is new
 function initializeReferralData(userId) {
     if (!referralData[userId]) {
         referralData[userId] = {
             referrerId: null,
             balance: 0,
             referredCount: 0,
-            isReferralRewardClaimed: false, // Prevents rewarding referrer multiple times
+            isReferralRewardClaimed: false,
         };
     }
 }
 
-// NEW: Function to update referrer's balance and count and notify them
+// Function to update referrer's balance and count and notify them
 function rewardReferrer(referrerId, referredUserId) {
     if (referrerId && referralData[referrerId]) {
         referralData[referrerId].balance += REFERRAL_REWARD_USDT;
@@ -139,20 +156,20 @@ bot.onText(/\/start\s?(\d+)?/, (msg, match) => {
     // 3. Reset user transaction state
     userStates[chatId] = {};
 
-    const welcomeMessage = `Hello, *${firstName}*!\n\nWelcome to the USDT Seller Bot. Current time: *${dateTime}*.\n\nI can help you easily sell your USDT for fiat currency (USD, EUR, GBP).\n\nReady to start?`;
+    const welcomeMessage = `Hello, *${firstName}*!\n\nWelcome to the Crypto Seller Bot. Current time: *${dateTime}*.\n\nI can help you easily sell your crypto for fiat currency (USD, EUR, GBP).\n\nReady to start?`;
 
     bot.sendMessage(chatId, welcomeMessage, {
         parse_mode: 'Markdown',
         reply_markup: {
             inline_keyboard: [
-                [{ text: "✅ Yes, I want to sell USDT", callback_data: 'start_sell' }],
+                [{ text: "✅ Yes, I want to sell Crypto", callback_data: 'start_sell' }],
                 [{ text: " GUIDE: How to use the Bot", callback_data: 'show_help' }]
             ]
         }
     });
 });
 
-// NEW: Handler for the /referral command
+// Handler for the /referral command
 bot.onText(/\/referral/, async (msg) => {
     const chatId = msg.chat.id;
     initializeReferralData(chatId); // Ensure data exists
@@ -210,29 +227,29 @@ ${isReadyToWithdraw
 bot.onText(/\/help/, (msg) => {
     const chatId = msg.chat.id;
     const helpMessage = `
-*❓ How to Use the USDT Seller Bot (FAQ)*
+*❓ How to Use the Crypto Seller Bot (FAQ)*
 
-This bot helps you convert your USDT into USD, EUR, or GBP. Here is the step-by-step process:
+This bot helps you convert your BTC, ETH, or USDT into USD, EUR, or GBP. Here is the step-by-step process:
 
 *Step 1: Start a Transaction*
 - Use the \`/start\` command to begin.
-- Choose the fiat currency you wish to receive.
+- Choose the cryptocurrency and the fiat currency you wish to receive.
 
-*Step 2: Select the Network*
-- You will be asked to select the blockchain network for your USDT deposit.
-- ⚠️ *CRITICAL:* You *must* choose the same network that your wallet uses (e.g., if your USDT is on the Tron network, select TRC20). Sending on the wrong network will result in a loss of funds.
+*Step 2: Select the Network (USDT only)*
+- If selling USDT, you will choose between TRC20 or ERC20.
+- ⚠️ *CRITICAL:* You *must* choose the same network that your wallet uses. Sending on the wrong network will result in a loss of funds.
 
 *Step 3: Enter the Amount*
-- Enter the amount of USDT you want to sell.
-- The minimum is *${MIN_USDT} USDT* and the maximum is *${MAX_USDT} USDT*.
+- Enter the amount of crypto you want to sell (e.g., 0.001 BTC or 100 USDT).
+- The transaction amount must be equivalent to a minimum of *${MIN_USDT} USDT* and a maximum of *${MAX_USDT} USDT*.
 
 *Step 4: Choose Payout Method & Details*
 - Select how you'd like to receive your money (Wise, PayPal, Bank Transfer, etc.).
 - Provide the necessary payment details when prompted.
 
-*Step 5: Deposit USDT*
+*Step 5: Deposit Crypto*
 - The bot will generate a unique deposit address for you.
-- Send the *exact* amount of USDT to this address.
+- Send the *exact* amount of crypto to this address.
 - Once your transaction is confirmed on the blockchain, we will process your fiat payout.
 
 *Need more help?*
@@ -286,7 +303,28 @@ bot.on('callback_query', (callbackQuery) => {
              bot.processUpdate({ update_id: 0, message: { ...msg, text: '/help', entities: [{type: 'bot_command', offset: 0, length: 5}]}});
         });
     } else if (data === 'start_sell') {
-        const ratesInfo = `*Current Exchange Rates:*\n- 1 USDT ≈ ${RATES.USDT_TO_USD.toFixed(3)} USD\n- 1 USDT ≈ ${(RATES.USDT_TO_USD * RATES.USD_TO_EUR).toFixed(3)} EUR\n- 1 USDT ≈ ${RATES.USDT_TO_GBP.toFixed(3)} GBP\n\nWhich currency would you like to receive?`;
+        // NEW: Step 1 - Choose Crypto
+        const cryptoMessage = `🚀 Which cryptocurrency would you like to sell?`;
+        bot.sendMessage(chatId, cryptoMessage, {
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "₿ Bitcoin (BTC)", callback_data: 'crypto_BTC' }],
+                    [{ text: "Ξ Ethereum (ETH)", callback_data: 'crypto_ETH' }],
+                    [{ text: "₮ Tether (USDT)", callback_data: 'crypto_USDT' }]
+                ]
+            }
+        });
+    } else if (data === 'cancel') {
+        bot.sendMessage(chatId, "No problem! Feel free to start again whenever you're ready by sending /start.");
+        delete userStates[chatId]; // Clear all state
+    } else if (data.startsWith('crypto_')) {
+        // NEW: Step 2 - Store Crypto, Choose Fiat
+        const crypto = data.split('_')[1];
+        userStates[chatId].crypto = crypto;
+
+        const ratesInfo = `You selected *${crypto}*.\n\n*Current Exchange Rates (Approximate):*\n- 1 USDT ≈ ${RATES.USDT_TO_USD.toFixed(3)} USD\n- 1 USDT ≈ ${(RATES.USDT_TO_USD * RATES.USD_TO_EUR).toFixed(3)} EUR\n- 1 USDT ≈ ${RATES.USDT_TO_GBP.toFixed(3)} GBP\n\nWhich currency would you like to receive?`;
+        
         bot.sendMessage(chatId, ratesInfo, {
             parse_mode: 'Markdown',
             reply_markup: {
@@ -295,28 +333,37 @@ bot.on('callback_query', (callbackQuery) => {
                 ]
             }
         });
-    } else if (data === 'cancel') {
-        bot.sendMessage(chatId, "No problem! Feel free to start again whenever you're ready by sending /start.");
-        delete userStates[chatId]; // Clear all state
+
     } else if (data.startsWith('fiat_')) {
+        // Step 3 - Store Fiat, Determine Next Step (Network or Amount)
         const currency = data.split('_')[1];
         userStates[chatId].fiat = currency;
-        const networkMessage = "Great! Now, please select the network for your USDT deposit:";
-        bot.sendMessage(chatId, networkMessage, {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: "BEP20 (BSC)", callback_data: 'net_BEP20' }],
-                    [{ text: "TRC20 (Tron)", callback_data: 'net_TRC20' }],
-                    [{ text: "ERC20 (Ethereum)", callback_data: 'net_ERC20' }]
-                ]
-            }
-        });
+        const crypto = userStates[chatId].crypto;
+
+        if (crypto === 'USDT') {
+            const networkMessage = "Great! Now, please select the network for your *USDT* deposit:";
+            bot.sendMessage(chatId, networkMessage, {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "TRC20 (Tron)", callback_data: 'net_TRC20' }],
+                        [{ text: "ERC20 (Ethereum)", callback_data: 'net_ERC20' }]
+                    ]
+                }
+            });
+        } else if (crypto === 'BTC' || crypto === 'ETH') {
+            // Skip network selection for BTC/ETH
+            userStates[chatId].awaiting = 'amount';
+            bot.sendMessage(chatId, `Please enter the amount of *${crypto}* you want to sell.\n\n*Note:* Minimum transaction is equivalent to ${MIN_USDT} USDT.`, { parse_mode: 'Markdown' });
+        }
+        
     } else if (data.startsWith('net_')) {
+        // Step 4 (USDT only) - Store Network, Go to Amount
         const network = data.split('_')[1];
         userStates[chatId].network = network;
         userStates[chatId].awaiting = 'amount';
-        bot.sendMessage(chatId, `Please enter the amount of USDT you want to sell.\n\n*Minimum:* ${MIN_USDT} USDT\n*Maximum:* ${MAX_USDT} USDT`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `Please enter the amount of *USDT* you want to sell.\n\n*Minimum:* ${MIN_USDT} USDT\n*Maximum:* ${MAX_USDT} USDT`, { parse_mode: 'Markdown' });
     } else if (data.startsWith('pay_')) {
+        // Step 6 - Select Payout Method (existing logic remains)
         const method = data.split('_')[1];
         let prompt = '';
         
@@ -392,7 +439,7 @@ bot.on('callback_query', (callbackQuery) => {
             const prompt = 'Please provide your US bank details. Reply with a single message in the following format:\n\n`Account Holder Name:\nAccount Number:\nRouting Number (ACH or ABA):`';
             bot.sendMessage(chatId, prompt, { parse_mode: 'Markdown' });
         }
-    } else if (data === 'withdraw_referral') { // NEW: Initiate referral withdrawal
+    } else if (data === 'withdraw_referral') { // Initiate referral withdrawal
         const { balance } = referralData[chatId];
         
         if (balance < MIN_REFERRAL_WITHDRAWAL_USDT) {
@@ -401,8 +448,8 @@ bot.on('callback_query', (callbackQuery) => {
              return;
         }
 
-        userStates[chatId].awaiting = 'referral_withdrawal_payment_selection'; // A placeholder state, detail prompt comes next
-        userStates[chatId].withdrawalAmount = balance; // Store the full balance for withdrawal
+        userStates[chatId].awaiting = 'referral_withdrawal_payment_selection'; 
+        userStates[chatId].withdrawalAmount = balance; 
 
         const message = `*💰 Initiate Referral Withdrawal*\n\nYou are withdrawing your total balance of *${balance.toFixed(2)} USDT*. Please select how you wish to receive the funds:`;
 
@@ -418,12 +465,12 @@ bot.on('callback_query', (callbackQuery) => {
             }
         });
 
-    } else if (data.startsWith('refpay_')) { // NEW: Handle payment selection for referral withdrawal
+    } else if (data.startsWith('refpay_')) { // Handle payment selection for referral withdrawal
         const method = data.split('_')[1];
         let prompt = '';
         
-        userStates[chatId].isReferralWithdrawal = true; // Flag to differentiate from main transaction
-        userStates[chatId].referralPaymentMethod = method; // Store the base method
+        userStates[chatId].isReferralWithdrawal = true;
+        userStates[chatId].referralPaymentMethod = method; 
 
         switch (method) {
             case 'wise':
@@ -475,13 +522,13 @@ bot.on('callback_query', (callbackQuery) => {
             bot.sendMessage(chatId, prompt, { parse_mode: 'Markdown' });
         }
         
-    } else if (data.startsWith('refpayout_')) { // NEW: Handles Skrill/Neteller choice for referral
+    } else if (data.startsWith('refpayout_')) { // Handles Skrill/Neteller choice for referral
         const method = data.split('_')[1]; // 'skrill' or 'neteller'
         userStates[chatId].referralPaymentMethod = method.charAt(0).toUpperCase() + method.slice(1);
         userStates[chatId].awaiting = 'ref_skrill_neteller_details';
         bot.sendMessage(chatId, `Please provide your *${userStates[chatId].referralPaymentMethod} email*.`, { parse_mode: 'Markdown' });
 
-    } else if (data.startsWith('refbank_')) { // NEW: Handles Bank region choice for referral
+    } else if (data.startsWith('refbank_')) { // Handles Bank region choice for referral
         const region = data.split('_')[1]; // 'eu' or 'us'
         userStates[chatId].referralPaymentMethod = region === 'eu' ? 'Bank Transfer (EU)' : 'Bank Transfer (US)';
         if (region === 'eu') {
@@ -559,13 +606,22 @@ bot.on('message', async (msg) => {
 
         if (awaiting === 'amount') {
             const amount = parseFloat(text);
-            if (isNaN(amount) || amount < MIN_USDT || amount > MAX_USDT) {
-                bot.sendMessage(chatId, `❌ Invalid amount. Please enter a number between ${MIN_USDT} and ${MAX_USDT}.`);
+            if (isNaN(amount) || amount <= 0) {
+                bot.sendMessage(chatId, `❌ Invalid amount. Please enter a valid positive number for ${userState.crypto}.`);
                 return;
             }
             userState.amount = amount;
+            
+            // Calculate equivalent fiat amount
+            const fiatToReceive = calculateFiat(amount, userState.crypto, userState.fiat);
+            
+            // Perform MIN/MAX check based on USDT equivalent
+            const amountInUSDT = calculateFiat(amount, userState.crypto, 'USDT') / RATES.USDT_TO_USD;
+            if (amountInUSDT < MIN_USDT || amountInUSDT > MAX_USDT) {
+                bot.sendMessage(chatId, `❌ The amount of ${userState.crypto} you entered is outside the accepted range. The transaction value must be between ${MIN_USDT} USDT and ${MAX_USDT} USDT.`);
+                return;
+            }
 
-            const fiatToReceive = calculateFiat(amount, userState.fiat);
             const confirmationMessage = `You will receive approximately *${fiatToReceive.toFixed(2)} ${userState.fiat}*.\n\nPlease choose your preferred payment method:`;
 
             bot.sendMessage(chatId, confirmationMessage, {
@@ -593,39 +649,44 @@ bot.on('message', async (msg) => {
 
             // --- COINPAYMENTS API CALL ---
             try {
-                const networkMap = {
-                    'BEP20': 'USDT.BEP20',
-                    'TRC20': 'USDT.TRC20',
-                    'ERC20': 'USDT.ERC20'
-                };
-                const coinCurrency = networkMap[userState.network];
+                // Determine the CoinPayments currency code (currency2)
+                let coinCurrency;
+                if (userState.crypto === 'USDT') {
+                    const networkMap = {
+                        'TRC20': 'USDT.TRC20',
+                        'ERC20': 'USDT.ERC20'
+                    };
+                    coinCurrency = networkMap[userState.network];
+                } else {
+                    // BTC and ETH use their standard CoinPayments codes
+                    coinCurrency = userState.crypto; // 'BTC' or 'ETH'
+                }
                 
                 // Ensure payment method is set for the custom field
                 let paymentMethodForCustom = userState.paymentMethod;
                 if (!paymentMethodForCustom && awaiting.includes('bank_details_')) {
                     paymentMethodForCustom = awaiting.includes('_eu') ? 'Bank Transfer (EU)' : 'Bank Transfer (US)';
                 } else if (!paymentMethodForCustom && awaiting === 'skrill_neteller_details') {
-                     // paymentMethod would have been set in the `payout_` callback
                      paymentMethodForCustom = userState.paymentMethod;
                 } else if (!paymentMethodForCustom) {
-                    paymentMethodForCustom = awaiting.split('_')[0]; // Fallback (wise, revolut, etc.)
+                    paymentMethodForCustom = awaiting.split('_')[0];
                 }
                 userState.paymentMethod = paymentMethodForCustom;
 
 
                 const transactionOptions = {
-                    currency1: 'USDT',
-                    currency2: coinCurrency,
+                    currency1: userState.crypto, // Set to BTC, ETH, or USDT
+                    currency2: coinCurrency, // Set the final CoinPayments code
                     amount: userState.amount,
                     buyer_email: BUYER_REFUND_EMAIL,
                     custom: `Payout to ${userState.paymentMethod}: ${userState.paymentDetails}`,
-                    item_name: `Sell ${userState.amount} USDT for ${userState.fiat}`,
+                    item_name: `Sell ${userState.amount} ${userState.crypto} for ${userState.fiat}`,
                     ipn_url: 'YOUR_IPN_WEBHOOK_URL'
                 };
 
                 const result = await coinpayments.createTransaction(transactionOptions);
 
-                // --- REFERRAL REWARD SIMULATION (NEW) ---
+                // --- REFERRAL REWARD SIMULATION ---
                 const referrerId = referralData[chatId]?.referrerId;
                 if (referrerId) {
                     // Reward if user has a referrer and hasn't triggered the reward before
@@ -636,14 +697,18 @@ bot.on('message', async (msg) => {
                 }
                 // --- END REFERRAL REWARD SIMULATION ---
 
+                let networkText = '';
+                if (userState.crypto === 'USDT') {
+                    networkText = ` (${userState.network})`;
+                }
 
-                const depositInfo = `✅ *Deposit Address Generated! (ID: ${result.txn_id})*\n\nPlease send exactly *${result.amount} USDT* (${userState.network}) to the address below:\n\n` +
+                const depositInfo = `✅ *Deposit Address Generated! (ID: ${result.txn_id})*\n\nPlease send exactly *${result.amount} ${userState.crypto}*${networkText} to the address below:\n\n` +
                     `\`${result.address}\`\n\n` + 
                     `*Status URL:* [Click to Track](${result.status_url})\n\n` +
                     `*Payout Method:* ${userState.paymentMethod}\n` +
                     `*Payout Details:* \n\`${userState.paymentDetails}\`\n\n` +
-                    `⚠️ *IMPORTANT:* Send only USDT on the ${userState.network} network to this address. Sending any other coin or using a different network may result in the loss of your funds.`;
-
+                    `⚠️ *IMPORTANT:* Send only ${userState.crypto} to this address.`;
+                    
                 bot.sendMessage(chatId, depositInfo, { parse_mode: 'Markdown' });
                 delete userStates[chatId];
 
@@ -657,17 +722,17 @@ bot.on('message', async (msg) => {
             'ref_bank_details_eu', 'ref_bank_details_us'
         ].includes(awaiting)) {
 
-            // --- REFERRAL WITHDRAWAL DETAILS HANDLER (NEW) ---
+            // --- REFERRAL WITHDRAWAL DETAILS HANDLER ---
             const withdrawalAmount = userState.withdrawalAmount;
             
-            // Set payment method if it was decided in a nested step
+            // Set payment method
             let paymentMethod = userState.referralPaymentMethod;
             if (awaiting.includes('ref_bank_details_')) {
                 paymentMethod = awaiting.includes('_eu') ? 'Bank Transfer (EU)' : 'Bank Transfer (US)';
             } else if (awaiting === 'ref_skrill_neteller_details') {
                 paymentMethod = userState.referralPaymentMethod;
             } else {
-                paymentMethod = awaiting.split('_')[1]; // Wise, PayPal, etc.
+                paymentMethod = awaiting.split('_')[1];
                 paymentMethod = paymentMethod.charAt(0).toUpperCase() + paymentMethod.slice(1);
             }
 
