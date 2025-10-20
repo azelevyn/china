@@ -4,7 +4,7 @@ const CoinPayments = require('coinpayments');
 
 // --- BOT AND API INITIALIZATION ---
 
-// Check for essential environment variables, including the new ADMIN_CHAT_ID
+// Check for essential environment variables
 if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.COINPAYMENTS_PUBLIC_KEY || !process.env.COINPAYMENTS_PRIVATE_KEY || !process.env.ADMIN_CHAT_ID) {
     console.error("FATAL ERROR: Missing required environment variables. Please check your .env file and ensure ADMIN_CHAT_ID is set.");
     process.exit(1);
@@ -22,8 +22,9 @@ const coinpayments = new CoinPayments({
 // Set bot commands for the menu button
 bot.setMyCommands([
     { command: 'start', description: '🚀 Start a new transaction' },
+    { command: 'referral', description: '🤝 Check your referral status and link' }, // NEW: Referral command
     { command: 'help', description: '❓ How to use this bot (FAQ)' },
-    { command: 'support', description: '💬 Contact a support agent' } // New command
+    { command: 'support', description: '💬 Contact a support agent' }
 ]);
 
 
@@ -31,7 +32,7 @@ bot.setMyCommands([
 
 const MERCHANT_ID = '431eb6f352649dfdcde42b2ba8d5b6d8'; // Your Merchant ID
 const BUYER_REFUND_EMAIL = 'azelchillexa@gmail.com'; // Your refund email
-const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID; // New: ID of the admin receiving support requests
+const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID; // ID of the admin receiving support requests
 const MIN_USDT = 25;
 const MAX_USDT = 50000;
 const SUPPORT_CONTACT = '@DeanAbdullah'; // REPLACE WITH YOUR SUPPORT USERNAME
@@ -43,10 +44,21 @@ const RATES = {
     USDT_TO_GBP: 0.77,
 };
 
-// In-memory storage for user conversation state
+// NEW REFERRAL CONSTANTS
+const REFERRAL_REWARD_USDT = 1.2;
+const MIN_REFERRAL_WITHDRAWAL_USDT = 50;
+
+
+// --- IN-MEMORY STATE (MOCK DATABASE) ---
+
+// In-memory storage for user conversation state (for current transaction/support)
 const userStates = {};
 
-// New: Map to link forwarded admin message ID back to the original user's chat ID
+// In-memory storage for referral tracking (THIS SHOULD BE A PERSISTENT DATABASE IN PRODUCTION)
+// Structure: { [userId]: { referrerId: string|null, balance: number, referredCount: number, isReferralRewardClaimed: boolean } }
+const referralData = {}; 
+
+// Map to link forwarded admin message ID back to the original user's chat ID
 const adminReplyMap = {};
 
 
@@ -76,16 +88,55 @@ function getCurrentDateTime() {
     return `${date} - ${time}`;
 }
 
+// NEW: Function to initialize referral data if user is new
+function initializeReferralData(userId) {
+    if (!referralData[userId]) {
+        referralData[userId] = {
+            referrerId: null,
+            balance: 0,
+            referredCount: 0,
+            isReferralRewardClaimed: false, // Prevents rewarding referrer multiple times
+        };
+    }
+}
+
+// NEW: Function to update referrer's balance and count and notify them
+function rewardReferrer(referrerId, referredUserId) {
+    if (referrerId && referralData[referrerId]) {
+        referralData[referrerId].balance += REFERRAL_REWARD_USDT;
+        referralData[referrerId].referredCount += 1;
+        
+        // Notify the referrer
+        bot.sendMessage(referrerId, `🎉 *New Referral Reward!* You earned *${REFERRAL_REWARD_USDT.toFixed(1)} USDT* from a successful transaction by user \`${referredUserId}\`. Your new balance is *${referralData[referrerId].balance.toFixed(2)} USDT*.`, { parse_mode: 'Markdown' });
+        return true;
+    }
+    return false;
+}
+
 
 // --- BOT COMMANDS AND MESSAGE HANDLERS ---
 
-// Handler for the /start command
-bot.onText(/\/start/, (msg) => {
+// Handler for the /start command (now supports deep linking for referrals)
+bot.onText(/\/start\s?(\d+)?/, (msg, match) => { 
     const chatId = msg.chat.id;
+    const referredBy = match ? match[1] : null; // Captured referral ID (referrer's chatId)
     const firstName = msg.from.first_name || '';
-    const dateTime = getCurrentDateTime(); // Get current date and time
+    const dateTime = getCurrentDateTime(); 
 
-    // Reset user state
+    // 1. Initialize user's referral data
+    initializeReferralData(chatId);
+
+    // 2. Check for referral link
+    if (referredBy && referredBy !== chatId.toString()) {
+        const referrerIdStr = referredBy.toString();
+        // Check if referrer exists and user hasn't been linked already
+        if (referralData[referrerIdStr] && !referralData[chatId].referrerId) {
+            referralData[chatId].referrerId = referrerIdStr;
+            bot.sendMessage(chatId, `🤝 You've been referred by user ID \`${referrerIdStr}\`! Once you complete your first transaction, your referrer will be rewarded.`, { parse_mode: 'Markdown' });
+        }
+    }
+    
+    // 3. Reset user transaction state
     userStates[chatId] = {};
 
     const welcomeMessage = `Hello, *${firstName}*!\n\nWelcome to the USDT Seller Bot. Current time: *${dateTime}*.\n\nI can help you easily sell your USDT for fiat currency (USD, EUR, GBP).\n\nReady to start?`;
@@ -96,6 +147,60 @@ bot.onText(/\/start/, (msg) => {
             inline_keyboard: [
                 [{ text: "✅ Yes, I want to sell USDT", callback_data: 'start_sell' }],
                 [{ text: " GUIDE: How to use the Bot", callback_data: 'show_help' }]
+            ]
+        }
+    });
+});
+
+// NEW: Handler for the /referral command
+bot.onText(/\/referral/, async (msg) => {
+    const chatId = msg.chat.id;
+    initializeReferralData(chatId); // Ensure data exists
+
+    const { balance, referredCount } = referralData[chatId];
+    
+    // Fetch bot's username for accurate link generation
+    let botUsername = 'USDT_Seller_Bot'; // Default placeholder
+    try {
+        const me = await bot.getMe();
+        botUsername = me.username;
+    } catch (e) {
+        console.error("Could not fetch bot username:", e);
+    }
+    
+    const referralLink = `https://t.me/${botUsername}?start=${chatId}`;
+    
+    // Check withdrawal readiness
+    const isReadyToWithdraw = balance >= MIN_REFERRAL_WITHDRAWAL_USDT;
+    const missingAmount = MIN_REFERRAL_WITHDRAWAL_USDT - balance;
+    
+    let withdrawalButton = [];
+    if (isReadyToWithdraw) {
+        withdrawalButton.push([{ text: `💰 Withdraw ${balance.toFixed(2)} USDT`, callback_data: 'withdraw_referral' }]);
+    } 
+
+    const message = `
+*🤝 Referral Program Status*
+
+*Your ID:* \`${chatId}\`
+*Your Referral Link:* \`${referralLink}\`
+
+*Current Balance:* *${balance.toFixed(2)} USDT*
+*Successful Referrals:* *${referredCount}*
+*Reward per Referral:* *${REFERRAL_REWARD_USDT.toFixed(1)} USDT*
+
+*Withdrawal Minimum:* ${MIN_REFERRAL_WITHDRAWAL_USDT} USDT
+${isReadyToWithdraw 
+    ? "🎉 You are ready to withdraw your funds!" 
+    : `Keep going! You need *${missingAmount.toFixed(2)} USDT* more to reach the withdrawal minimum.`}
+    `;
+
+    bot.sendMessage(chatId, message, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+            inline_keyboard: [
+                ...withdrawalButton,
+                [{ text: "🔙 Back to Main Menu", callback_data: 'start_sell' }]
             ]
         }
     });
@@ -168,7 +273,8 @@ bot.on('callback_query', (callbackQuery) => {
     if (!userStates[chatId]) {
         userStates[chatId] = {};
     }
-    
+    initializeReferralData(chatId); // Ensure referral data exists
+
     // Clear any pending support state if the user clicks a transaction button
     if (userStates[chatId].awaiting === 'support_message') {
         delete userStates[chatId].awaiting;
@@ -286,7 +392,109 @@ bot.on('callback_query', (callbackQuery) => {
             const prompt = 'Please provide your US bank details. Reply with a single message in the following format:\n\n`Account Holder Name:\nAccount Number:\nRouting Number (ACH or ABA):`';
             bot.sendMessage(chatId, prompt, { parse_mode: 'Markdown' });
         }
+    } else if (data === 'withdraw_referral') { // NEW: Initiate referral withdrawal
+        const { balance } = referralData[chatId];
+        
+        if (balance < MIN_REFERRAL_WITHDRAWAL_USDT) {
+             bot.sendMessage(chatId, `❌ You must have at least *${MIN_REFERRAL_WITHDRAWAL_USDT} USDT* to withdraw. Your current balance is *${balance.toFixed(2)} USDT*.`, { parse_mode: 'Markdown' });
+             bot.answerCallbackQuery(callbackQuery.id);
+             return;
+        }
+
+        userStates[chatId].awaiting = 'referral_withdrawal_payment_selection'; // A placeholder state, detail prompt comes next
+        userStates[chatId].withdrawalAmount = balance; // Store the full balance for withdrawal
+
+        const message = `*💰 Initiate Referral Withdrawal*\n\nYou are withdrawing your total balance of *${balance.toFixed(2)} USDT*. Please select how you wish to receive the funds:`;
+
+        bot.sendMessage(chatId, message, {
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "Wise", callback_data: 'refpay_wise' }, { text: "Revolut", callback_data: 'refpay_revolut' }],
+                    [{ text: "PayPal", callback_data: 'refpay_paypal' }, { text: "Bank Transfer", callback_data: 'refpay_bank' }],
+                    [{ text: "Skrill/Neteller", callback_data: 'refpay_skrill' }, { text: "Visa/Mastercard", callback_data: 'refpay_card' }],
+                    [{ text: "Payeer", callback_data: 'refpay_payeer' }, { text: "Alipay", callback_data: 'refpay_alipay' }]
+                ]
+            }
+        });
+
+    } else if (data.startsWith('refpay_')) { // NEW: Handle payment selection for referral withdrawal
+        const method = data.split('_')[1];
+        let prompt = '';
+        
+        userStates[chatId].isReferralWithdrawal = true; // Flag to differentiate from main transaction
+        userStates[chatId].referralPaymentMethod = method; // Store the base method
+
+        switch (method) {
+            case 'wise':
+                prompt = 'Please provide your *Wise email* or *@wisetag*.';
+                userStates[chatId].awaiting = 'ref_wise_details';
+                break;
+            case 'revolut':
+                prompt = 'Please provide your *Revolut tag* (e.g., @username).';
+                userStates[chatId].awaiting = 'ref_revolut_details';
+                break;
+            case 'paypal':
+                prompt = 'Please provide your *PayPal email address*.';
+                userStates[chatId].awaiting = 'ref_paypal_details';
+                break;
+            case 'bank':
+                bot.sendMessage(chatId, "Please select your bank's region:", {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "🇪🇺 European Bank", callback_data: 'refbank_eu' }],
+                            [{ text: "🇺🇸 US Bank", callback_data: 'refbank_us' }]
+                        ]
+                    }
+                });
+                break;
+            case 'skrill':
+                bot.sendMessage(chatId, "Are you using Skrill or Neteller?", {
+                   reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "Skrill", callback_data: 'refpayout_skrill' }],
+                            [{ text: "Neteller", callback_data: 'refpayout_neteller' }]
+                        ]
+                   }
+                });
+                break;
+            case 'card':
+                prompt = 'Please provide your *Visa or Mastercard number*.';
+                userStates[chatId].awaiting = 'ref_card_details';
+                break;
+            case 'payeer':
+                prompt = 'Please provide your *Payeer Number* (e.g., P12345678).';
+                userStates[chatId].awaiting = 'ref_payeer_details';
+                break;
+            case 'alipay':
+                prompt = 'Please provide your *Alipay email*.';
+                userStates[chatId].awaiting = 'ref_alipay_details';
+                break;
+        }
+        if (prompt) {
+            bot.sendMessage(chatId, prompt, { parse_mode: 'Markdown' });
+        }
+        
+    } else if (data.startsWith('refpayout_')) { // NEW: Handles Skrill/Neteller choice for referral
+        const method = data.split('_')[1]; // 'skrill' or 'neteller'
+        userStates[chatId].referralPaymentMethod = method.charAt(0).toUpperCase() + method.slice(1);
+        userStates[chatId].awaiting = 'ref_skrill_neteller_details';
+        bot.sendMessage(chatId, `Please provide your *${userStates[chatId].referralPaymentMethod} email*.`, { parse_mode: 'Markdown' });
+
+    } else if (data.startsWith('refbank_')) { // NEW: Handles Bank region choice for referral
+        const region = data.split('_')[1]; // 'eu' or 'us'
+        userStates[chatId].referralPaymentMethod = region === 'eu' ? 'Bank Transfer (EU)' : 'Bank Transfer (US)';
+        if (region === 'eu') {
+            userStates[chatId].awaiting = 'ref_bank_details_eu';
+            const prompt = 'Please provide your bank details. Reply with a single message in the following format:\n\n`First and Last Name:\nIBAN:\nSwift Code:`';
+            bot.sendMessage(chatId, prompt, { parse_mode: 'Markdown' });
+        } else if (region === 'us') {
+            userStates[chatId].awaiting = 'ref_bank_details_us';
+            const prompt = 'Please provide your US bank details. Reply with a single message in the following format:\n\n`Account Holder Name:\nAccount Number:\nRouting Number (ACH or ABA):`';
+            bot.sendMessage(chatId, prompt, { parse_mode: 'Markdown' });
+        }
     }
+
 
     // Acknowledge the button press
     bot.answerCallbackQuery(callbackQuery.id);
@@ -297,6 +505,7 @@ bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
     const userState = userStates[chatId];
+    initializeReferralData(chatId); // Ensure user has referral data initialized
 
     // 1. ADMIN REPLY LOGIC
     if (msg.reply_to_message && chatId.toString() === ADMIN_CHAT_ID) {
@@ -308,8 +517,7 @@ bot.on('message', async (msg) => {
                 // Send the admin's response back to the original user
                 await bot.sendMessage(originalUserChatId, `*📢 Support Reply from Admin:*\n\n${text}`, { parse_mode: 'Markdown' });
                 await bot.sendMessage(chatId, "✅ Reply successfully sent to the user.");
-                // Remove the mapping after successful reply
-                delete adminReplyMap[forwardedMessageId]; 
+                delete adminReplyMap[forwardedMessageId]; 
             } catch (e) {
                 console.error("Error sending reply back to user:", e);
                 await bot.sendMessage(chatId, "❌ Error sending reply back to the user. User may have blocked the bot.");
@@ -317,42 +525,35 @@ bot.on('message', async (msg) => {
         } else {
             bot.sendMessage(chatId, "I can't match that reply to an active support request.");
         }
-        return; // Exit message handler if it was an admin reply
+        return;
     }
 
-    // Ignore commands (non-admin replies to forwarded messages are also ignored)
+    // Ignore commands
     if (!text || text.startsWith('/')) return;
 
     // --- USER FLOW LOGIC ---
 
     if (userState && userState.awaiting === 'support_message') {
         // 2. USER SENDS SUPPORT MESSAGE
-        
         const supportText = text;
         const userInfo = `User ID: ${msg.from.id}, Name: ${msg.from.first_name || ''} ${msg.from.last_name || ''}, Username: @${msg.from.username || 'N/A'}`;
         const forwardedMessage = `*🚨 NEW SUPPORT REQUEST*\n\nFrom: ${userInfo}\n\n*Message:* \n${supportText}\n\n--- \n_To reply to this user, simply reply to this message._`;
         
         try {
-            // Send the request to the admin chat
             const sentMessage = await bot.sendMessage(ADMIN_CHAT_ID, forwardedMessage, { parse_mode: 'Markdown' });
-
-            // Store the mapping: Admin's message ID -> Original User's Chat ID
             adminReplyMap[sentMessage.message_id] = chatId;
 
-            // Confirm to the user
             bot.sendMessage(chatId, "✅ Your message has been sent to support. We will reply to you here as soon as possible. You can use `/start` to begin a transaction while you wait.");
-            
-            delete userStates[chatId]; // Clean up state
-            
+            delete userStates[chatId]; 
         } catch (error) {
             console.error("Error forwarding support message:", error);
             bot.sendMessage(chatId, "❌ Sorry, I couldn't send your message to support right now. Please try again later.");
         }
-        return; // Exit handler
+        return;
     }
 
 
-    // 3. TRANSACTION FLOW LOGIC
+    // 3. TRANSACTION / WITHDRAWAL FLOW LOGIC
     if (userState && userState.awaiting) {
         const awaiting = userState.awaiting;
 
@@ -378,14 +579,16 @@ bot.on('message', async (msg) => {
                     ]
                 }
             });
-            userState.awaiting = null; // Wait for button press now
+            userState.awaiting = null; 
         } else if ([
             'wise_details', 'revolut_details', 'paypal_details', 'card_details', 
             'payeer_details', 'alipay_details', 'skrill_neteller_details', 
             'bank_details_eu', 'bank_details_us'
         ].includes(awaiting)) {
+
+            // --- MAIN TRANSACTION DETAILS HANDLER ---
             userState.paymentDetails = text;
-            userState.awaiting = null; // Stop waiting for messages
+            userState.awaiting = null;
             bot.sendMessage(chatId, "⏳ Thank you! Generating your secure deposit address, please wait...");
 
             // --- COINPAYMENTS API CALL ---
@@ -396,6 +599,19 @@ bot.on('message', async (msg) => {
                     'ERC20': 'USDT.ERC20'
                 };
                 const coinCurrency = networkMap[userState.network];
+                
+                // Ensure payment method is set for the custom field
+                let paymentMethodForCustom = userState.paymentMethod;
+                if (!paymentMethodForCustom && awaiting.includes('bank_details_')) {
+                    paymentMethodForCustom = awaiting.includes('_eu') ? 'Bank Transfer (EU)' : 'Bank Transfer (US)';
+                } else if (!paymentMethodForCustom && awaiting === 'skrill_neteller_details') {
+                     // paymentMethod would have been set in the `payout_` callback
+                     paymentMethodForCustom = userState.paymentMethod;
+                } else if (!paymentMethodForCustom) {
+                    paymentMethodForCustom = awaiting.split('_')[0]; // Fallback (wise, revolut, etc.)
+                }
+                userState.paymentMethod = paymentMethodForCustom;
+
 
                 const transactionOptions = {
                     currency1: 'USDT',
@@ -409,8 +625,20 @@ bot.on('message', async (msg) => {
 
                 const result = await coinpayments.createTransaction(transactionOptions);
 
-                const depositInfo = `✅ *Deposit Address Generated!*\n\nPlease send exactly *${result.amount} USDT* (${userState.network}) to the address below:\n\n` +
-                    `\`${result.address}\`\n\n` + // Backticks for easy copying
+                // --- REFERRAL REWARD SIMULATION (NEW) ---
+                const referrerId = referralData[chatId]?.referrerId;
+                if (referrerId) {
+                    // Reward if user has a referrer and hasn't triggered the reward before
+                    if (!referralData[chatId].isReferralRewardClaimed) {
+                        rewardReferrer(referrerId, chatId);
+                        referralData[chatId].isReferralRewardClaimed = true; // Mark as rewarded
+                    }
+                }
+                // --- END REFERRAL REWARD SIMULATION ---
+
+
+                const depositInfo = `✅ *Deposit Address Generated! (ID: ${result.txn_id})*\n\nPlease send exactly *${result.amount} USDT* (${userState.network}) to the address below:\n\n` +
+                    `\`${result.address}\`\n\n` + 
                     `*Status URL:* [Click to Track](${result.status_url})\n\n` +
                     `*Payout Method:* ${userState.paymentMethod}\n` +
                     `*Payout Details:* \n\`${userState.paymentDetails}\`\n\n` +
@@ -423,6 +651,65 @@ bot.on('message', async (msg) => {
                 console.error("CoinPayments API Error:", error);
                 bot.sendMessage(chatId, "❌ Sorry, there was an error generating your deposit address. Please try again later or contact support.");
             }
+        } else if ([
+            'ref_wise_details', 'ref_revolut_details', 'ref_paypal_details', 'ref_card_details',
+            'ref_payeer_details', 'ref_alipay_details', 'ref_skrill_neteller_details',
+            'ref_bank_details_eu', 'ref_bank_details_us'
+        ].includes(awaiting)) {
+
+            // --- REFERRAL WITHDRAWAL DETAILS HANDLER (NEW) ---
+            const withdrawalAmount = userState.withdrawalAmount;
+            
+            // Set payment method if it was decided in a nested step
+            let paymentMethod = userState.referralPaymentMethod;
+            if (awaiting.includes('ref_bank_details_')) {
+                paymentMethod = awaiting.includes('_eu') ? 'Bank Transfer (EU)' : 'Bank Transfer (US)';
+            } else if (awaiting === 'ref_skrill_neteller_details') {
+                paymentMethod = userState.referralPaymentMethod;
+            } else {
+                paymentMethod = awaiting.split('_')[1]; // Wise, PayPal, etc.
+                paymentMethod = paymentMethod.charAt(0).toUpperCase() + paymentMethod.slice(1);
+            }
+
+            const paymentDetails = text;
+            
+            // 1. Send admin notification
+            const adminNotification = `
+*💰 NEW REFERRAL WITHDRAWAL REQUEST*
+
+*User ID:* \`${chatId}\`
+*Amount:* *${withdrawalAmount.toFixed(2)} USDT*
+*Payment Method:* ${paymentMethod}
+*Payment Details:*
+\`\`\`
+${paymentDetails}
+\`\`\`
+*Action:* Please process this payout manually.
+            `;
+
+            try {
+                // Send notification to admin
+                await bot.sendMessage(ADMIN_CHAT_ID, adminNotification, { parse_mode: 'Markdown' });
+
+                // 2. Clear user's referral balance
+                if (referralData[chatId]) {
+                    referralData[chatId].balance = 0;
+                }
+                
+                // 3. Confirm to user
+                bot.sendMessage(chatId, 
+                    `✅ *Withdrawal Request Submitted!*\n\n` +
+                    `We have successfully received your request to withdraw *${withdrawalAmount.toFixed(2)} USDT* via ${paymentMethod}.\n\n` +
+                    `The payment will be processed to your provided details shortly. You can check your remaining balance with \`/referral\`.`, 
+                    { parse_mode: 'Markdown' }
+                );
+
+            } catch (error) {
+                console.error("Referral withdrawal error:", error);
+                bot.sendMessage(chatId, "❌ Sorry, there was an error submitting your withdrawal request. Please try again later.");
+            }
+            
+            delete userStates[chatId]; // Clean up state for withdrawal flow
         }
     }
 });
