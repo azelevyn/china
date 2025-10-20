@@ -33,20 +33,28 @@ bot.setMyCommands([
 const MERCHANT_ID = '431eb6f352649dfdcde42b2ba8d5b6d8'; // Your Merchant ID
 const BUYER_REFUND_EMAIL = 'azelchillexa@gmail.com'; // Your refund email
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID; // ID of the admin receiving support requests
-const MIN_USDT = 25;
-const MAX_USDT = 50000;
 const SUPPORT_CONTACT = '@DeanAbdullah'; // REPLACE WITH YOUR SUPPORT USERNAME
 
 // Conversion Rates (Rates are simplified for demonstration; in production, use a real-time oracle)
 const RATES = {
-    // USDT rates
+    // USDT rates (USDT is base for fiat conversion)
     USDT_TO_USD: 1 / 1.08, 
     USD_TO_EUR: 0.89,
     USDT_TO_GBP: 0.77,
 
-    // NEW Crypto Rates (Example/Placeholder - based on conversion to USDT equivalent)
-    BTC_TO_USDT: 65000, // Example: 1 BTC = 65000 USDT
-    ETH_TO_USDT: 3500,  // Example: 1 ETH = 3500 USDT
+    // Crypto to USDT Equivalent (used for calculating fiat payout)
+    BTC_TO_USDT: 65000, 
+    ETH_TO_USDT: 3500,  
+};
+
+// TRANSACTION LIMITS IN NATIVE CRYPTO UNITS (New requirement implemented here)
+const LIMITS = {
+    // BTC Limits in BTC
+    BTC: { MIN: 0.00025, MAX: 1.2 }, 
+    // ETH Limits in ETH
+    ETH: { MIN: 0.0075, MAX: 22.25 }, // Approx 25 USDT to 78k USDT range
+    // USDT Limits in USDT (Updated MAX to align with BTC max equivalent)
+    USDT: { MIN: 25, MAX: 78000 } 
 };
 
 // NEW REFERRAL CONSTANTS
@@ -226,6 +234,10 @@ ${isReadyToWithdraw
 // Handler for the /help command
 bot.onText(/\/help/, (msg) => {
     const chatId = msg.chat.id;
+    // Get the highest min limit and lowest max limit across all coins for a generic message
+    const minGeneral = Math.min(LIMITS.USDT.MIN * RATES.USDT_TO_USD, LIMITS.BTC.MIN * RATES.BTC_TO_USDT * RATES.USDT_TO_USD, LIMITS.ETH.MIN * RATES.ETH_TO_USDT * RATES.USDT_TO_USD).toFixed(0);
+    const maxGeneral = Math.max(LIMITS.USDT.MAX * RATES.USDT_TO_USD, LIMITS.BTC.MAX * RATES.BTC_TO_USDT * RATES.USDT_TO_USD, LIMITS.ETH.MAX * RATES.ETH_TO_USDT * RATES.USDT_TO_USD).toFixed(0);
+
     const helpMessage = `
 *❓ How to Use the Crypto Seller Bot (FAQ)*
 
@@ -240,8 +252,8 @@ This bot helps you convert your BTC, ETH, or USDT into USD, EUR, or GBP. Here is
 - ⚠️ *CRITICAL:* You *must* choose the same network that your wallet uses. Sending on the wrong network will result in a loss of funds.
 
 *Step 3: Enter the Amount*
-- Enter the amount of crypto you want to sell (e.g., 0.001 BTC or 100 USDT).
-- The transaction amount must be equivalent to a minimum of *${MIN_USDT} USDT* and a maximum of *${MAX_USDT} USDT*.
+- Enter the amount of crypto you want to sell.
+- The transaction amount must be equivalent to a minimum of approximately *$${minGeneral}* and a maximum of *$${maxGeneral}* (USD). Specific limits for each crypto are provided when you enter the amount.
 
 *Step 4: Choose Payout Method & Details*
 - Select how you'd like to receive your money (Wise, PayPal, Bank Transfer, etc.).
@@ -323,7 +335,7 @@ bot.on('callback_query', (callbackQuery) => {
         const crypto = data.split('_')[1];
         userStates[chatId].crypto = crypto;
 
-        const ratesInfo = `You selected *${crypto}*.\n\n*Current Exchange Rates (Approximate):*\n- 1 USDT ≈ ${RATES.USDT_TO_USD.toFixed(3)} USD\n- 1 USDT ≈ ${(RATES.USDT_TO_USD * RATES.USD_TO_EUR).toFixed(3)} EUR\n- 1 USDT ≈ ${RATES.USDT_TO_GBP.toFixed(3)} GBP\n\nWhich currency would you like to receive?`;
+        const ratesInfo = `You selected *${crypto}*.\n\n*Current Exchange Rates (Approximate):*\n- 1 USDT ≈ ${RATES.USDT_TO_USD.toFixed(3)} USD\n- 1 USD ≈ ${(RATES.USD_TO_EUR).toFixed(3)} EUR\n- 1 USD ≈ ${RATES.USDT_TO_GBP.toFixed(3) / RATES.USDT_TO_USD} GBP\n\nWhich currency would you like to receive?`;
         
         bot.sendMessage(chatId, ratesInfo, {
             parse_mode: 'Markdown',
@@ -353,7 +365,8 @@ bot.on('callback_query', (callbackQuery) => {
         } else if (crypto === 'BTC' || crypto === 'ETH') {
             // Skip network selection for BTC/ETH
             userStates[chatId].awaiting = 'amount';
-            bot.sendMessage(chatId, `Please enter the amount of *${crypto}* you want to sell.\n\n*Note:* Minimum transaction is equivalent to ${MIN_USDT} USDT.`, { parse_mode: 'Markdown' });
+            const { MIN, MAX } = LIMITS[crypto];
+            bot.sendMessage(chatId, `Please enter the amount of *${crypto}* you want to sell.\n\n*Limits:* ${MIN} ${crypto} (Min) to ${MAX} ${crypto} (Max).`, { parse_mode: 'Markdown' });
         }
         
     } else if (data.startsWith('net_')) {
@@ -361,7 +374,8 @@ bot.on('callback_query', (callbackQuery) => {
         const network = data.split('_')[1];
         userStates[chatId].network = network;
         userStates[chatId].awaiting = 'amount';
-        bot.sendMessage(chatId, `Please enter the amount of *USDT* you want to sell.\n\n*Minimum:* ${MIN_USDT} USDT\n*Maximum:* ${MAX_USDT} USDT`, { parse_mode: 'Markdown' });
+        const { MIN, MAX } = LIMITS['USDT'];
+        bot.sendMessage(chatId, `Please enter the amount of *USDT* you want to sell.\n\n*Limits:* ${MIN} USDT (Min) to ${MAX} USDT (Max).`, { parse_mode: 'Markdown' });
     } else if (data.startsWith('pay_')) {
         // Step 6 - Select Payout Method (existing logic remains)
         const method = data.split('_')[1];
@@ -606,21 +620,27 @@ bot.on('message', async (msg) => {
 
         if (awaiting === 'amount') {
             const amount = parseFloat(text);
+            const crypto = userState.crypto;
+            const limits = LIMITS[crypto];
+
             if (isNaN(amount) || amount <= 0) {
-                bot.sendMessage(chatId, `❌ Invalid amount. Please enter a valid positive number for ${userState.crypto}.`);
+                bot.sendMessage(chatId, `❌ Invalid amount. Please enter a valid positive number for ${crypto}.`);
                 return;
             }
+            
+            // --- NEW NATIVE LIMIT CHECK ---
+            if (amount < limits.MIN || amount > limits.MAX) {
+                bot.sendMessage(chatId, `❌ The amount is outside the accepted range. Please enter an amount between *${limits.MIN} ${crypto}* and *${limits.MAX} ${crypto}*.`);
+                return;
+            }
+            // --- END NEW NATIVE LIMIT CHECK ---
+
             userState.amount = amount;
             
             // Calculate equivalent fiat amount
-            const fiatToReceive = calculateFiat(amount, userState.crypto, userState.fiat);
+            const fiatToReceive = calculateFiat(amount, crypto, userState.fiat);
             
-            // Perform MIN/MAX check based on USDT equivalent
-            const amountInUSDT = calculateFiat(amount, userState.crypto, 'USDT') / RATES.USDT_TO_USD;
-            if (amountInUSDT < MIN_USDT || amountInUSDT > MAX_USDT) {
-                bot.sendMessage(chatId, `❌ The amount of ${userState.crypto} you entered is outside the accepted range. The transaction value must be between ${MIN_USDT} USDT and ${MAX_USDT} USDT.`);
-                return;
-            }
+            userState.fiatToReceive = fiatToReceive; // Store for final confirmation
 
             const confirmationMessage = `You will receive approximately *${fiatToReceive.toFixed(2)} ${userState.fiat}*.\n\nPlease choose your preferred payment method:`;
 
@@ -680,7 +700,7 @@ bot.on('message', async (msg) => {
                     amount: userState.amount,
                     buyer_email: BUYER_REFUND_EMAIL,
                     custom: `Payout to ${userState.paymentMethod}: ${userState.paymentDetails}`,
-                    item_name: `Sell ${userState.amount} ${userState.crypto} for ${userState.fiat}`,
+                    item_name: `Sell ${userState.amount} ${userState.crypto} for ${userState.fiatToReceive.toFixed(2)} ${userState.fiat}`,
                     ipn_url: 'YOUR_IPN_WEBHOOK_URL'
                 };
 
