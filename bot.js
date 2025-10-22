@@ -713,8 +713,5 @@ async function processTransaction(chatId, userState) {
         bot.sendMessage(chatId, '❌ Error generating deposit address. Please try again later.');
     }
 }
-});
 
-
-console.log("Bot is running...");
 // --- END OF CODE ---
