@@ -305,7 +305,6 @@ bot.on('callback_query', (callbackQuery) => {
         bot.sendMessage(chatId, networkMessage, {
             reply_markup: {
                 inline_keyboard: [
-                    [{ text: "BEP20 (BSC)", callback_data: 'net_BEP20' }],
                     [{ text: "TRC20 (Tron)", callback_data: 'net_TRC20' }],
                     [{ text: "ERC20 (Ethereum)", callback_data: 'net_ERC20' }]
                 ]
@@ -517,7 +516,7 @@ bot.on('message', async (msg) => {
                 // Send the admin's response back to the original user
                 await bot.sendMessage(originalUserChatId, `*📢 Support Reply from Admin:*\n\n${text}`, { parse_mode: 'Markdown' });
                 await bot.sendMessage(chatId, "✅ Reply successfully sent to the user.");
-                delete adminReplyMap[forwardedMessageId]; 
+                delete adminReplyMap[forwardedMessageId]; 
             } catch (e) {
                 console.error("Error sending reply back to user:", e);
                 await bot.sendMessage(chatId, "❌ Error sending reply back to the user. User may have blocked the bot.");
@@ -594,7 +593,6 @@ bot.on('message', async (msg) => {
             // --- COINPAYMENTS API CALL ---
             try {
                 const networkMap = {
-                    'BEP20': 'USDT.BEP20',
                     'TRC20': 'USDT.TRC20',
                     'ERC20': 'USDT.ERC20'
                 };
