@@ -39,9 +39,9 @@ const SUPPORT_CONTACT = '@DeanAbdullah'; // REPLACE WITH YOUR SUPPORT USERNAME
 
 // Conversion Rates
 const RATES = {
-    USDT_TO_USD: 1 / 1.08, // Based on USD TO USDT 1.08
-    USD_TO_EUR: 0.89,
-    USDT_TO_GBP: 0.77,
+    USDT_TO_USD: 1 / 1.09, // Based on USD TO USDT 1.09
+    USD_TO_EUR: 1 / 1.12,
+    USDT_TO_GBP: 1 / 0.89,
 };
 
 // NEW REFERRAL CONSTANTS
