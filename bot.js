@@ -39,7 +39,7 @@ const SUPPORT_CONTACT = '@DeanAbdullah'; // REPLACE WITH YOUR SUPPORT USERNAME
 
 // UPDATED: Conversion Rates
 const RATES = {
-    USDT_TO_USD: 1.24, // UPDATED: 1 USDT = 1.24 USD
+    USD_TO_USDT: 1.24, // UPDATED: 1 USDT = 1.24 USD
     USDT_TO_EUR: 1.09, // UPDATED: 1 USDT = 1.09 EUR
     USDT_TO_GBP: 0.92, // UPDATED: 1 USDT = 0.92 GBP
 };
@@ -70,7 +70,7 @@ const adminReplyMap = {};
 // UPDATED: Function to calculate the received amount
 function calculateFiat(usdtAmount, fiatCurrency) {
     if (fiatCurrency === 'USD') {
-        return usdtAmount / RATES.USDT_TO_USD; // UPDATED: Convert USDT to USD using the new rate
+        return usdtAmount / RATES.USD_TO_USDT; // UPDATED: Convert USDT to USD using the new rate
     }
     if (fiatCurrency === 'EUR') {
         return usdtAmount * RATES.USDT_TO_EUR; // UPDATED: Convert USDT to EUR
@@ -149,7 +149,7 @@ function formatPaymentDetails(userState) {
 \`${paymentDetails}\`
 
 *Exchange Rates:*
-- 1 USD = ${RATES.USD_TO_USDT} USDT
+- 1 USDT = ${RATES.USD_TO_USDT} USDT
 - 1 USDT = ${RATES.USDT_TO_EUR} EUR
 - 1 USDT = ${RATES.USDT_TO_GBP} GBP
     `;
