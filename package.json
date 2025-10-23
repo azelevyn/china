@@ -1,29 +1,27 @@
 {
-  "name": "usdt-seller-bot",
+  "name": "telegram-usdt-seller-bot",
   "version": "1.0.0",
-  "description": "Telegram USDT Seller Bot with Mini App",
+  "description": "A Telegram bot to sell USDT for fiat using CoinPayments.",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
     "dev": "nodemon bot.js"
   },
-  "dependencies": {
-    "express": "^4.18.2",
-    "node-telegram-bot-api": "^0.64.0",
-    "coinpayments": "^2.1.1",
-    "dotenv": "^16.3.1",
-    "cors": "^2.8.5"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  },
   "keywords": [
     "telegram",
     "bot",
+    "coinpayments",
     "usdt",
-    "crypto",
-    "mini-app"
+    "crypto"
   ],
   "author": "Your Name",
-  "license": "MIT"
+  "license": "ISC",
+  "dependencies": {
+    "coinpayments": "^2.2.0",
+    "dotenv": "^16.4.5",
+    "node-telegram-bot-api": "^0.66.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
 }
