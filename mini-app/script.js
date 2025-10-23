@@ -120,4 +120,43 @@ async function processTransaction() {
         } else {
             throw new Error(result.error);
         }
-   
+    } catch (error) {
+        alert('Error: ' + error.message);
+        showStep(1);
+    }
+}
+
+// Helper function to get chat ID from URL parameters
+function getChatIdFromUrl() {
+    const urlParams = new URLSearchParams(window.location.search);
+    return urlParams.get('startapp');
+}
+
+// Close the Mini App
+function closeApp() {
+    if (tg) {
+        tg.close();
+    }
+}
+
+// Initialize when page loads
+document.addEventListener('DOMContentLoaded', function() {
+    initTelegramApp();
+    
+    // Add real-time amount calculation
+    document.getElementById('amount').addEventListener('input', function() {
+        if (document.getElementById('step2').classList.contains('active')) {
+            updateTransactionSummary();
+        }
+    });
+    
+    // Add input validation
+    document.getElementById('amount').addEventListener('blur', function() {
+        const amount = parseFloat(this.value);
+        if (amount < 25) {
+            this.value = 25;
+        } else if (amount > 50000) {
+            this.value = 50000;
+        }
+    });
+});
