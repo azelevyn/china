@@ -22,7 +22,7 @@ const coinpayments = new CoinPayments({
 // Set bot commands for the menu button
 bot.setMyCommands([
     { command: 'start', description: '🚀 Start a new transaction' },
-    { command: 'referral', description: '🤝 Check your referral status and link' }, // NEW: Referral command
+    { command: 'referral', description: '🤝 Check your referral status and link' },
     { command: 'help', description: '❓ How to use this bot (FAQ)' },
     { command: 'support', description: '💬 Contact a support agent' }
 ]);
@@ -47,6 +47,9 @@ const RATES = {
 // NEW REFERRAL CONSTANTS
 const REFERRAL_REWARD_USDT = 1.2;
 const MIN_REFERRAL_WITHDRAWAL_USDT = 50;
+
+// NEW: Track new users who haven't been notified to admin yet
+const newUsersToNotify = new Set();
 
 
 // --- IN-MEMORY STATE (MOCK DATABASE) ---
@@ -113,6 +116,23 @@ function rewardReferrer(referrerId, referredUserId) {
     return false;
 }
 
+// NEW: Function to send new user notification to admin
+function notifyAdminNewUser(userId, userInfo, referredBy = null) {
+    const referralInfo = referredBy ? `\n*Referred by:* \`${referredBy}\`` : '';
+    
+    const notificationMessage = `
+🆕 *NEW USER JOINED*
+
+*User ID:* \`${userId}\`
+*User Info:* ${userInfo}
+*Join Time:* ${getCurrentDateTime()}${referralInfo}
+
+Total users: ${Object.keys(referralData).length}
+    `;
+    
+    bot.sendMessage(ADMIN_CHAT_ID, notificationMessage, { parse_mode: 'Markdown' });
+}
+
 
 // --- BOT COMMANDS AND MESSAGE HANDLERS ---
 
@@ -121,8 +141,13 @@ bot.onText(/\/start\s?(\d+)?/, (msg, match) => {
     const chatId = msg.chat.id;
     const referredBy = match ? match[1] : null; // Captured referral ID (referrer's chatId)
     const firstName = msg.from.first_name || '';
+    const lastName = msg.from.last_name || '';
+    const username = msg.from.username ? `@${msg.from.username}` : 'N/A';
     const dateTime = getCurrentDateTime(); 
 
+    // NEW: Check if this is a new user who needs admin notification
+    const isNewUser = !referralData[chatId];
+    
     // 1. Initialize user's referral data
     initializeReferralData(chatId);
 
@@ -138,6 +163,12 @@ bot.onText(/\/start\s?(\d+)?/, (msg, match) => {
     
     // 3. Reset user transaction state
     userStates[chatId] = {};
+
+    // NEW: Send admin notification for new users
+    if (isNewUser) {
+        const userInfo = `${firstName} ${lastName} (${username})`;
+        notifyAdminNewUser(chatId, userInfo, referredBy);
+    }
 
     const welcomeMessage = `Hello, *${firstName}*!\n\nWelcome to the USDT Seller Bot. Current time: *${dateTime}*.\n\nI can help you easily sell your USDT for fiat currency (USD, EUR, GBP).\n\nReady to start?`;
 
