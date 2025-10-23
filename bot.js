@@ -37,11 +37,11 @@ const MIN_USDT = 25;
 const MAX_USDT = 50000;
 const SUPPORT_CONTACT = '@DeanAbdullah'; // REPLACE WITH YOUR SUPPORT USERNAME
 
-// Conversion Rates
+// UPDATED: Conversion Rates
 const RATES = {
-    USDT_TO_USD: 1 / 1.08, // Based on USD TO USDT 1.08
-    USD_TO_EUR: 0.89,
-    USDT_TO_GBP: 0.77,
+    USD_TO_USDT: 1.09, // UPDATED: 1 USD = 1.09 USDT
+    USDT_TO_EUR: 1.09, // UPDATED: 1 USDT = 1.09 EUR
+    USDT_TO_GBP: 0.89, // UPDATED: 1 USDT = 0.89 GBP
 };
 
 // NEW REFERRAL CONSTANTS
@@ -67,17 +67,16 @@ const adminReplyMap = {};
 
 // --- HELPER FUNCTIONS ---
 
-// Function to calculate the received amount
+// UPDATED: Function to calculate the received amount
 function calculateFiat(usdtAmount, fiatCurrency) {
     if (fiatCurrency === 'USD') {
-        return usdtAmount * RATES.USDT_TO_USD;
+        return usdtAmount / RATES.USD_TO_USDT; // UPDATED: Convert USDT to USD using the new rate
     }
     if (fiatCurrency === 'EUR') {
-        const amountInUSD = usdtAmount * RATES.USDT_TO_USD;
-        return amountInUSD * RATES.USD_TO_EUR;
+        return usdtAmount * RATES.USDT_TO_EUR; // UPDATED: Convert USDT to EUR
     }
     if (fiatCurrency === 'GBP') {
-        return usdtAmount * RATES.USDT_TO_GBP;
+        return usdtAmount * RATES.USDT_TO_GBP; // UPDATED: Convert USDT to GBP
     }
     return 0;
 }
@@ -131,6 +130,29 @@ Total users: ${Object.keys(referralData).length}
     `;
     
     bot.sendMessage(ADMIN_CHAT_ID, notificationMessage, { parse_mode: 'Markdown' });
+}
+
+// NEW: Function to format payment details for review
+function formatPaymentDetails(userState) {
+    const { amount, fiat, network, paymentMethod, paymentDetails } = userState;
+    const fiatToReceive = calculateFiat(amount, fiat);
+    
+    return `
+📋 *TRANSACTION SUMMARY*
+
+*Amount to Sell:* ${amount} USDT
+*Network:* ${network}
+*Currency to Receive:* ${fiat}
+*Amount to Receive:* ${fiatToReceive.toFixed(2)} ${fiat}
+*Payment Method:* ${paymentMethod}
+*Payment Details:* 
+\`${paymentDetails}\`
+
+*Exchange Rates:*
+- 1 USD = ${RATES.USD_TO_USDT} USDT
+- 1 USDT = ${RATES.USDT_TO_EUR} EUR
+- 1 USDT = ${RATES.USDT_TO_GBP} GBP
+    `;
 }
 
 
@@ -261,7 +283,10 @@ This bot helps you convert your USDT into USD, EUR, or GBP. Here is the step-by-
 - Select how you'd like to receive your money (Wise, PayPal, Bank Transfer, etc.).
 - Provide the necessary payment details when prompted.
 
-*Step 5: Deposit USDT*
+*Step 5: Review and Confirm*
+- Review all your transaction details before proceeding.
+
+*Step 6: Deposit USDT*
 - The bot will generate a unique deposit address for you.
 - Send the *exact* amount of USDT to this address.
 - Once your transaction is confirmed on the blockchain, we will process your fiat payout.
@@ -317,7 +342,8 @@ bot.on('callback_query', (callbackQuery) => {
              bot.processUpdate({ update_id: 0, message: { ...msg, text: '/help', entities: [{type: 'bot_command', offset: 0, length: 5}]}});
         });
     } else if (data === 'start_sell') {
-        const ratesInfo = `*Current Exchange Rates:*\n- 1 USDT ≈ ${RATES.USDT_TO_USD.toFixed(3)} USD\n- 1 USDT ≈ ${(RATES.USDT_TO_USD * RATES.USD_TO_EUR).toFixed(3)} EUR\n- 1 USDT ≈ ${RATES.USDT_TO_GBP.toFixed(3)} GBP\n\nWhich currency would you like to receive?`;
+        // UPDATED: Exchange rates display
+        const ratesInfo = `*Current Exchange Rates:*\n- 1 USD = ${RATES.USD_TO_USDT} USDT\n- 1 USDT = ${RATES.USDT_TO_EUR} EUR\n- 1 USDT = ${RATES.USDT_TO_GBP} GBP\n\nWhich currency would you like to receive?`;
         bot.sendMessage(chatId, ratesInfo, {
             parse_mode: 'Markdown',
             reply_markup: {
@@ -422,6 +448,15 @@ bot.on('callback_query', (callbackQuery) => {
             const prompt = 'Please provide your US bank details. Reply with a single message in the following format:\n\n`Account Holder Name:\nAccount Number:\nRouting Number (ACH or ABA):`';
             bot.sendMessage(chatId, prompt, { parse_mode: 'Markdown' });
         }
+    } else if (data === 'confirm_transaction') { // NEW: User confirms transaction details
+        userStates[chatId].awaiting = null;
+        bot.sendMessage(chatId, "⏳ Thank you! Generating your secure deposit address, please wait...");
+        generateDepositAddress(chatId);
+        
+    } else if (data === 'edit_transaction') { // NEW: User wants to edit transaction details
+        bot.sendMessage(chatId, "No problem! Let's start over. Use /start to begin a new transaction.");
+        delete userStates[chatId];
+        
     } else if (data === 'withdraw_referral') { // NEW: Initiate referral withdrawal
         const { balance } = referralData[chatId];
         
@@ -530,6 +565,68 @@ bot.on('callback_query', (callbackQuery) => {
     bot.answerCallbackQuery(callbackQuery.id);
 });
 
+// NEW: Function to generate deposit address after confirmation
+async function generateDepositAddress(chatId) {
+    const userState = userStates[chatId];
+    
+    try {
+        const networkMap = {
+            'TRC20': 'USDT.TRC20',
+            'ERC20': 'USDT.ERC20'
+        };
+        const coinCurrency = networkMap[userState.network];
+        
+        // Ensure payment method is set for the custom field
+        let paymentMethodForCustom = userState.paymentMethod;
+        if (!paymentMethodForCustom && userState.awaiting && userState.awaiting.includes('bank_details_')) {
+            paymentMethodForCustom = userState.awaiting.includes('_eu') ? 'Bank Transfer (EU)' : 'Bank Transfer (US)';
+        } else if (!paymentMethodForCustom && userState.awaiting === 'skrill_neteller_details') {
+             // paymentMethod would have been set in the `payout_` callback
+             paymentMethodForCustom = userState.paymentMethod;
+        } else if (!paymentMethodForCustom && userState.awaiting) {
+            paymentMethodForCustom = userState.awaiting.split('_')[0]; // Fallback (wise, revolut, etc.)
+        }
+        userState.paymentMethod = paymentMethodForCustom;
+
+        const transactionOptions = {
+            currency1: 'USDT',
+            currency2: coinCurrency,
+            amount: userState.amount,
+            buyer_email: BUYER_REFUND_EMAIL,
+            custom: `Payout to ${userState.paymentMethod}: ${userState.paymentDetails}`,
+            item_name: `Sell ${userState.amount} USDT for ${userState.fiat}`,
+            ipn_url: 'YOUR_IPN_WEBHOOK_URL'
+        };
+
+        const result = await coinpayments.createTransaction(transactionOptions);
+
+        // --- REFERRAL REWARD SIMULATION (NEW) ---
+        const referrerId = referralData[chatId]?.referrerId;
+        if (referrerId) {
+            // Reward if user has a referrer and hasn't triggered the reward before
+            if (!referralData[chatId].isReferralRewardClaimed) {
+                rewardReferrer(referrerId, chatId);
+                referralData[chatId].isReferralRewardClaimed = true; // Mark as rewarded
+            }
+        }
+        // --- END REFERRAL REWARD SIMULATION ---
+
+        const depositInfo = `✅ *Deposit Address Generated! (ID: ${result.txn_id})*\n\nPlease send exactly *${result.amount} USDT* (${userState.network}) to the address below:\n\n` +
+            `\`${result.address}\`\n\n` + 
+            `*Status URL:* [Click to Track](${result.status_url})\n\n` +
+            `*Payout Method:* ${userState.paymentMethod}\n` +
+            `*Payout Details:* \n\`${userState.paymentDetails}\`\n\n` +
+            `⚠️ *IMPORTANT:* Send only USDT on the ${userState.network} network to this address. Sending any other coin or using a different network may result in the loss of your funds.`;
+
+        bot.sendMessage(chatId, depositInfo, { parse_mode: 'Markdown' });
+        delete userStates[chatId];
+
+    } catch (error) {
+        console.error("CoinPayments API Error:", error);
+        bot.sendMessage(chatId, "❌ Sorry, there was an error generating your deposit address. Please try again later or contact support.");
+    }
+}
+
 // Handler for text messages (for amount, payment details, and support messages)
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
@@ -619,67 +716,20 @@ bot.on('message', async (msg) => {
             // --- MAIN TRANSACTION DETAILS HANDLER ---
             userState.paymentDetails = text;
             userState.awaiting = null;
-            bot.sendMessage(chatId, "⏳ Thank you! Generating your secure deposit address, please wait...");
-
-            // --- COINPAYMENTS API CALL ---
-            try {
-                const networkMap = {
-                    'TRC20': 'USDT.TRC20',
-                    'ERC20': 'USDT.ERC20'
-                };
-                const coinCurrency = networkMap[userState.network];
-                
-                // Ensure payment method is set for the custom field
-                let paymentMethodForCustom = userState.paymentMethod;
-                if (!paymentMethodForCustom && awaiting.includes('bank_details_')) {
-                    paymentMethodForCustom = awaiting.includes('_eu') ? 'Bank Transfer (EU)' : 'Bank Transfer (US)';
-                } else if (!paymentMethodForCustom && awaiting === 'skrill_neteller_details') {
-                     // paymentMethod would have been set in the `payout_` callback
-                     paymentMethodForCustom = userState.paymentMethod;
-                } else if (!paymentMethodForCustom) {
-                    paymentMethodForCustom = awaiting.split('_')[0]; // Fallback (wise, revolut, etc.)
+            
+            // NEW: Show review and confirmation step instead of immediately generating address
+            const reviewMessage = formatPaymentDetails(userState);
+            
+            bot.sendMessage(chatId, reviewMessage, {
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "✅ Confirm & Generate Deposit Address", callback_data: 'confirm_transaction' }],
+                        [{ text: "✏️ Edit Transaction Details", callback_data: 'edit_transaction' }]
+                    ]
                 }
-                userState.paymentMethod = paymentMethodForCustom;
-
-
-                const transactionOptions = {
-                    currency1: 'USDT',
-                    currency2: coinCurrency,
-                    amount: userState.amount,
-                    buyer_email: BUYER_REFUND_EMAIL,
-                    custom: `Payout to ${userState.paymentMethod}: ${userState.paymentDetails}`,
-                    item_name: `Sell ${userState.amount} USDT for ${userState.fiat}`,
-                    ipn_url: 'YOUR_IPN_WEBHOOK_URL'
-                };
-
-                const result = await coinpayments.createTransaction(transactionOptions);
-
-                // --- REFERRAL REWARD SIMULATION (NEW) ---
-                const referrerId = referralData[chatId]?.referrerId;
-                if (referrerId) {
-                    // Reward if user has a referrer and hasn't triggered the reward before
-                    if (!referralData[chatId].isReferralRewardClaimed) {
-                        rewardReferrer(referrerId, chatId);
-                        referralData[chatId].isReferralRewardClaimed = true; // Mark as rewarded
-                    }
-                }
-                // --- END REFERRAL REWARD SIMULATION ---
-
-
-                const depositInfo = `✅ *Deposit Address Generated! (ID: ${result.txn_id})*\n\nPlease send exactly *${result.amount} USDT* (${userState.network}) to the address below:\n\n` +
-                    `\`${result.address}\`\n\n` + 
-                    `*Status URL:* [Click to Track](${result.status_url})\n\n` +
-                    `*Payout Method:* ${userState.paymentMethod}\n` +
-                    `*Payout Details:* \n\`${userState.paymentDetails}\`\n\n` +
-                    `⚠️ *IMPORTANT:* Send only USDT on the ${userState.network} network to this address. Sending any other coin or using a different network may result in the loss of your funds.`;
-
-                bot.sendMessage(chatId, depositInfo, { parse_mode: 'Markdown' });
-                delete userStates[chatId];
-
-            } catch (error) {
-                console.error("CoinPayments API Error:", error);
-                bot.sendMessage(chatId, "❌ Sorry, there was an error generating your deposit address. Please try again later or contact support.");
-            }
+            });
+            
         } else if ([
             'ref_wise_details', 'ref_revolut_details', 'ref_paypal_details', 'ref_card_details',
             'ref_payeer_details', 'ref_alipay_details', 'ref_skrill_neteller_details',
