@@ -1,7 +1,6 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const CoinPayments = require('coinpayments');
-const QRCode = require('qrcode');
 
 // --- BOT AND API INITIALIZATION ---
 
@@ -136,24 +135,6 @@ Total users: ${Object.keys(referralData).length}
     bot.sendMessage(ADMIN_CHAT_ID, notificationMessage, { parse_mode: 'Markdown' });
 }
 
-// NEW: Function to send transaction details notification to admin
-function notifyAdminTransactionDetails(userId, userInfo, transactionDetails) {
-    const notificationMessage = `
-💰 *NEW TRANSACTION DETAILS SUBMITTED*
-
-*User ID:* \`${userId}\`
-*User Info:* ${userInfo}
-*Submission Time:* ${getCurrentDateTime()}
-
-*Transaction Details:*
-${transactionDetails}
-
-*Action:* Please monitor this transaction.
-    `;
-    
-    bot.sendMessage(ADMIN_CHAT_ID, notificationMessage, { parse_mode: 'Markdown' });
-}
-
 // NEW: Function to format payment details for review
 function formatPaymentDetails(userState) {
     const { amount, fiat, network, paymentMethod, paymentDetails } = userState;
@@ -215,40 +196,6 @@ function clearLastMessage(chatId) {
     delete lastMessageIds[chatId];
 }
 
-// NEW: Function to generate QR code and send with address
-async function sendDepositAddressWithQR(chatId, address, amount, network, transactionId, paymentMethod, paymentDetails) {
-    try {
-        // Generate QR code
-        const qrCodeDataURL = await QRCode.toDataURL(address);
-        const qrCodeBuffer = Buffer.from(qrCodeDataURL.split(',')[1], 'base64');
-        
-        const depositInfo = `✅ *Deposit Address Generated! (ID: ${transactionId})*\n\nPlease send exactly *${amount} USDT* (${network}) to the address below:\n\n` +
-            `\`${address}\`\n\n` + 
-            `⏳ *Awaiting payment confirmation...*\n\n` +
-            `*Payout Method:* ${paymentMethod}\n` +
-            `*Payout Details:* \n\`${paymentDetails}\`\n\n` +
-            `⚠️ *IMPORTANT:* Send only USDT on the ${network} network to this address. Sending any other coin or using a different network may result in the loss of your funds.`;
-
-        // Send QR code as photo
-        await bot.sendPhoto(chatId, qrCodeBuffer, {
-            caption: depositInfo,
-            parse_mode: 'Markdown'
-        });
-        
-    } catch (error) {
-        console.error("QR Code generation error:", error);
-        // Fallback to text-only if QR code fails
-        const depositInfo = `✅ *Deposit Address Generated! (ID: ${transactionId})*\n\nPlease send exactly *${amount} USDT* (${network}) to the address below:\n\n` +
-            `\`${address}\`\n\n` + 
-            `⏳ *Awaiting payment confirmation...*\n\n` +
-            `*Payout Method:* ${paymentMethod}\n` +
-            `*Payout Details:* \n\`${paymentDetails}\`\n\n` +
-            `⚠️ *IMPORTANT:* Send only USDT on the ${network} network to this address. Sending any other coin or using a different network may result in the loss of your funds.`;
-        
-        await bot.sendMessage(chatId, depositInfo, { parse_mode: 'Markdown' });
-    }
-}
-
 
 // --- BOT COMMANDS AND MESSAGE HANDLERS ---
 
@@ -287,14 +234,13 @@ bot.onText(/\/start\s?(\d+)?/, (msg, match) => {
         notifyAdminNewUser(chatId, userInfo, referredBy);
     }
 
-    const welcomeMessage = `Hello, *${firstName}*! 👋\n\nWelcome to the USDT Seller Bot. Current time: *${dateTime}*.\n\nI can help you easily sell your USDT for fiat currency (USD, EUR, GBP).\n\n*Why choose us?*\n• Fast transactions ⚡\n• Secure payments 🔒\n• Best exchange rates 💰\n• 24/7 support 🕒\n\nReady to start selling your USDT?`;
+    const welcomeMessage = `Hello, *${firstName}*!\n\nWelcome to the USDT Seller Bot. Current time: *${dateTime}*.\n\nI can help you easily sell your USDT for fiat currency (USD, EUR, GBP).\n\nReady to start?`;
 
     sendOrEditMessage(chatId, welcomeMessage, {
         reply_markup: {
             inline_keyboard: [
                 [{ text: "✅ Yes, I want to sell USDT", callback_data: 'start_sell' }],
-                [{ text: "❌ No, I'm not ready yet", callback_data: 'not_ready' }],
-                [{ text: "📖 GUIDE: How to use the Bot", callback_data: 'show_help' }]
+                [{ text: " GUIDE: How to use the Bot", callback_data: 'show_help' }]
             ]
         }
     });
@@ -443,10 +389,6 @@ bot.on('callback_query', (callbackQuery) => {
                 ]
             }
         });
-    } else if (data === 'not_ready') {
-        // NEW: Handle "Not ready" response
-        const notReadyMessage = `Alright. No worries! 😊\n\nYou can click on *Start* whenever you are ready to sell your USDT.\n\nIn the meantime, feel free to:\n• Read our guide with \`/help\` 📖\n• Check our referral program with \`/referral\` 🤝\n• Contact support with \`/support\` 💬\n\nWe'll be here when you're ready! 🚀`;
-        sendOrEditMessage(chatId, notReadyMessage);
     } else if (data === 'cancel') {
         sendOrEditMessage(chatId, "No problem! Feel free to start again whenever you're ready by sending /start.");
         delete userStates[chatId]; // Clear all state
@@ -705,23 +647,14 @@ async function generateDepositAddress(chatId) {
         }
         // --- END REFERRAL REWARD SIMULATION ---
 
-        // Send QR code and address
-        await sendDepositAddressWithQR(
-            chatId, 
-            result.address, 
-            result.amount, 
-            userState.network,
-            result.txn_id,
-            userState.paymentMethod,
-            userState.paymentDetails
-        );
+        const depositInfo = `✅ *Deposit Address Generated! (ID: ${result.txn_id})*\n\nPlease send exactly *${result.amount} USDT* (${userState.network}) to the address below:\n\n` +
+            `\`${result.address}\`\n\n` + 
+            `⏳ *Awaiting payment confirmation...*\n\n` +
+            `*Payout Method:* ${userState.paymentMethod}\n` +
+            `*Payout Details:* \n\`${userState.paymentDetails}\`\n\n` +
+            `⚠️ *IMPORTANT:* Send only USDT on the ${userState.network} network to this address. Sending any other coin or using a different network may result in the loss of your funds.`;
 
-        // Send admin notification about transaction details
-        const userInfo = `${msg.from.first_name || ''} ${msg.from.last_name || ''} (@${msg.from.username || 'N/A'})`;
-        const transactionDetails = `Amount: ${userState.amount} USDT\nNetwork: ${userState.network}\nCurrency: ${userState.fiat}\nPayment Method: ${userState.paymentMethod}\nTransaction ID: ${result.txn_id}`;
-        
-        notifyAdminTransactionDetails(chatId, userInfo, transactionDetails);
-
+        sendOrEditMessage(chatId, depositInfo);
         delete userStates[chatId];
 
     } catch (error) {
