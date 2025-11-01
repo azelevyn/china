@@ -25,7 +25,8 @@ bot.setMyCommands([
     { command: 'referral', description: '🤝 Check your referral status and link' },
     { command: 'find', description: '🔍 Find transaction by order number' },
     { command: 'help', description: '❓ How to use this bot (FAQ)' },
-    { command: 'support', description: '💬 Contact a support agent' }
+    { command: 'support', description: '💬 Contact a support agent' },
+    { command: 'transfer', description: '🔄 Internal transfer between accounts' }
 ]);
 
 
@@ -49,6 +50,10 @@ const RATES = {
 const REFERRAL_REWARD_USDT = 1.2;
 const MIN_REFERRAL_WITHDRAWAL_USDT = 50;
 
+// NEW: INTERNAL TRANSFER CONSTANTS
+const MIN_INTERNAL_TRANSFER_USDT = 10;
+const TRANSFER_FEE_PERCENTAGE = 0.5; // 0.5% transfer fee
+
 // NEW: Track new users who haven't been notified to admin yet
 const newUsersToNotify = new Set();
 
@@ -58,6 +63,11 @@ const lastMessageIds = {};
 // NEW: Order number tracking
 let orderCounter = 1000;
 const transactionRecords = {}; // Store transaction records by order number
+
+// NEW: Account number system
+let accountCounter = 100000;
+const userAccounts = {}; // Structure: { [userId]: { accountNumber: string, balance: number } }
+const accountToUserMap = {}; // Structure: { [accountNumber]: userId }
 
 
 // --- IN-MEMORY STATE (MOCK DATABASE) ---
@@ -80,6 +90,60 @@ function generateOrderNumber() {
     const timestamp = Date.now().toString().slice(-6);
     const orderNumber = `ORD${orderCounter++}${timestamp}`;
     return orderNumber;
+}
+
+// NEW: Function to generate unique account number
+function generateAccountNumber() {
+    const accountNumber = `ACC${accountCounter++}`;
+    return accountNumber;
+}
+
+// NEW: Function to initialize user account
+function initializeUserAccount(userId) {
+    if (!userAccounts[userId]) {
+        const accountNumber = generateAccountNumber();
+        userAccounts[userId] = {
+            accountNumber: accountNumber,
+            balance: 0
+        };
+        accountToUserMap[accountNumber] = userId;
+        console.log(`Created account ${accountNumber} for user ${userId}`);
+    }
+    return userAccounts[userId];
+}
+
+// NEW: Function to get user by account number
+function getUserByAccountNumber(accountNumber) {
+    return accountToUserMap[accountNumber];
+}
+
+// NEW: Function to process internal transfer
+function processInternalTransfer(senderId, recipientAccountNumber, amount) {
+    const recipientId = getUserByAccountNumber(recipientAccountNumber);
+    
+    if (!recipientId) {
+        return { success: false, error: 'Account number not found' };
+    }
+    
+    if (!userAccounts[senderId] || userAccounts[senderId].balance < amount) {
+        return { success: false, error: 'Insufficient balance' };
+    }
+    
+    const fee = amount * (TRANSFER_FEE_PERCENTAGE / 100);
+    const netAmount = amount - fee;
+    
+    // Deduct from sender
+    userAccounts[senderId].balance -= amount;
+    
+    // Add to recipient
+    userAccounts[recipientId].balance += netAmount;
+    
+    return { 
+        success: true, 
+        recipientId: recipientId,
+        fee: fee,
+        netAmount: netAmount
+    };
 }
 
 // NEW: Function to store transaction record
@@ -259,6 +323,9 @@ bot.onText(/\/start\s?(\d+)?/, async (msg, match) => {
     // 1. Initialize user's referral data
     initializeReferralData(chatId);
 
+    // NEW: Initialize user's account
+    initializeUserAccount(chatId);
+
     // 2. Check for referral link
     if (referredBy && referredBy !== chatId.toString()) {
         const referrerIdStr = referredBy.toString();
@@ -285,11 +352,26 @@ bot.onText(/\/start\s?(\d+)?/, async (msg, match) => {
         reply_markup: {
             inline_keyboard: [
                 [{ text: "✅ Yes, I want to sell USDT", callback_data: 'start_sell' }],
+                [{ text: "🔄 Internal Transfer", callback_data: 'internal_transfer' }],
                 [{ text: "🔍 Find Transaction", callback_data: 'find_transaction' }],
                 [{ text: "📖 GUIDE: How to use the Bot", callback_data: 'show_help' }]
             ]
         }
     });
+});
+
+// NEW: Handler for the /transfer command
+bot.onText(/\/transfer/, (msg) => {
+    const chatId = msg.chat.id;
+    // Initialize user account if not exists
+    initializeUserAccount(chatId);
+    
+    userStates[chatId] = { awaiting: 'transfer_amount' };
+    
+    const accountInfo = userAccounts[chatId];
+    const message = `💰 *Internal Transfer*\n\n*Your Account Number:* \`${accountInfo.accountNumber}\`\n*Available Balance:* ${accountInfo.balance.toFixed(2)} USDT\n\nPlease enter the amount of USDT you want to transfer:\n\n*Minimum:* ${MIN_INTERNAL_TRANSFER_USDT} USDT\n*Transfer Fee:* ${TRANSFER_FEE_PERCENTAGE}%`;
+    
+    sendOrEditMessage(chatId, message);
 });
 
 // NEW: Handler for the /find command
@@ -384,6 +466,12 @@ This bot helps you convert your USDT into USD, EUR, or GBP. Here is the step-by-
 - Send the *exact* amount of USDT to this address.
 - Once your transaction is confirmed on the blockchain, we will process your fiat payout.
 
+*Internal Transfers*
+- Use \`/transfer\` to send USDT to other bot users
+- Each user has a unique account number
+- Transfer fee: ${TRANSFER_FEE_PERCENTAGE}%
+- Minimum transfer: ${MIN_INTERNAL_TRANSFER_USDT} USDT
+
 *Order Numbers*
 - Each transaction gets a unique order number (e.g., ORD1000123456)
 - Use \`/find\` command to search for your transaction by order number
@@ -426,6 +514,7 @@ bot.on('callback_query', async (callbackQuery) => {
         userStates[chatId] = {};
     }
     initializeReferralData(chatId); // Ensure referral data exists
+    initializeUserAccount(chatId); // Ensure account exists
 
     // Clear any pending support state if the user clicks a transaction button
     if (userStates[chatId].awaiting === 'support_message') {
@@ -441,6 +530,11 @@ bot.on('callback_query', async (callbackQuery) => {
         // Trigger the find transaction flow
         bot.getMe().then(() => {
              bot.processUpdate({ update_id: 0, message: { ...msg, text: '/find', entities: [{type: 'bot_command', offset: 0, length: 5}]}});
+        });
+    } else if (data === 'internal_transfer') {
+        // Trigger the internal transfer flow
+        bot.getMe().then(() => {
+             bot.processUpdate({ update_id: 0, message: { ...msg, text: '/transfer', entities: [{type: 'bot_command', offset: 0, length: 9}]}});
         });
     } else if (data === 'start_sell') {
         // Show loading before showing exchange rates
@@ -768,12 +862,13 @@ async function generateDepositAddress(chatId) {
     }
 }
 
-// Handler for text messages (for amount, payment details, support messages, and order number search)
+// Handler for text messages (for amount, payment details, support messages, order number search, and internal transfers)
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
     const userState = userStates[chatId];
     initializeReferralData(chatId); // Ensure user has referral data initialized
+    initializeUserAccount(chatId); // Ensure user has account initialized
 
     // 1. ADMIN REPLY LOGIC
     if (msg.reply_to_message && chatId.toString() === ADMIN_CHAT_ID) {
@@ -857,6 +952,76 @@ bot.on('message', async (msg) => {
                 }
             });
         }
+        delete userStates[chatId];
+        return;
+    }
+
+    // NEW: INTERNAL TRANSFER LOGIC
+    if (userState && userState.awaiting === 'transfer_amount') {
+        const amount = parseFloat(text);
+        const accountInfo = userAccounts[chatId];
+        
+        if (isNaN(amount) || amount < MIN_INTERNAL_TRANSFER_USDT) {
+            sendOrEditMessage(chatId, `❌ Invalid amount. Please enter a number greater than or equal to ${MIN_INTERNAL_TRANSFER_USDT} USDT.`);
+            return;
+        }
+        
+        if (amount > accountInfo.balance) {
+            sendOrEditMessage(chatId, `❌ Insufficient balance. You have ${accountInfo.balance.toFixed(2)} USDT available.`);
+            return;
+        }
+        
+        userState.transferAmount = amount;
+        userState.awaiting = 'transfer_account';
+        
+        sendOrEditMessage(chatId, `✅ Transfer amount: *${amount} USDT*\n\nPlease enter the recipient's account number (e.g., ACC100000):`);
+        return;
+    }
+    
+    if (userState && userState.awaiting === 'transfer_account') {
+        const recipientAccount = text.trim().toUpperCase();
+        const amount = userState.transferAmount;
+        
+        // Check if transferring to own account
+        if (recipientAccount === userAccounts[chatId].accountNumber) {
+            sendOrEditMessage(chatId, "❌ You cannot transfer to your own account.");
+            delete userStates[chatId];
+            return;
+        }
+        
+        const transferResult = processInternalTransfer(chatId, recipientAccount, amount);
+        
+        if (!transferResult.success) {
+            sendOrEditMessage(chatId, `❌ Transfer failed: ${transferResult.error}`);
+            delete userStates[chatId];
+            return;
+        }
+        
+        // Transfer successful
+        const fee = transferResult.fee;
+        const netAmount = transferResult.netAmount;
+        const recipientId = transferResult.recipientId;
+        
+        // Notify sender
+        const senderMessage = `✅ *Transfer Successful!*\n\n*Amount Sent:* ${amount} USDT\n*Transfer Fee:* ${fee.toFixed(2)} USDT (${TRANSFER_FEE_PERCENTAGE}%)\n*Net Amount Received:* ${netAmount.toFixed(2)} USDT\n*Recipient Account:* ${recipientAccount}\n*Your New Balance:* ${userAccounts[chatId].balance.toFixed(2)} USDT`;
+        
+        sendOrEditMessage(chatId, senderMessage, {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "🔄 Make Another Transfer", callback_data: 'internal_transfer' }],
+                    [{ text: "🔙 Back to Main Menu", callback_data: 'start_sell' }]
+                ]
+            }
+        });
+        
+        // Notify recipient
+        try {
+            const recipientMessage = `💰 *You Received a Transfer!*\n\n*Amount Received:* ${netAmount.toFixed(2)} USDT\n*From Account:* ${userAccounts[chatId].accountNumber}\n*Your New Balance:* ${userAccounts[recipientId].balance.toFixed(2)} USDT`;
+            await bot.sendMessage(recipientId, recipientMessage, { parse_mode: 'Markdown' });
+        } catch (error) {
+            console.error("Could not notify recipient:", error);
+        }
+        
         delete userStates[chatId];
         return;
     }
