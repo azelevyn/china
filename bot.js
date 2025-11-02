@@ -25,26 +25,9 @@ bot.setMyCommands([
     { command: 'referral', description: '🤝 Check your referral status and link' },
     { command: 'find', description: '🔍 Find transaction by order number' },
     { command: 'help', description: '❓ How to use this bot (FAQ)' },
-    { command: 'support', description: '💬 Contact a support agent' },
-    { command: 'transfer', description: '🔄 Internal transfer between accounts' }
+    { command: 'support', description: '💬 Contact a support agent' }
 ]);
 
-// Set admin commands
-bot.setMyCommands([
-    { command: 'start', description: '🚀 Start a new transaction' },
-    { command: 'referral', description: '🤝 Check your referral status and link' },
-    { command: 'find', description: '🔍 Find transaction by order number' },
-    { command: 'help', description: '❓ How to use this bot (FAQ)' },
-    { command: 'support', description: '💬 Contact a support agent' },
-    { command: 'transfer', description: '🔄 Internal transfer between accounts' }
-], { scope: { type: 'all_private_chats' } });
-
-bot.setMyCommands([
-    { command: 'admin', description: '🛠️ Admin panel' },
-    { command: 'addbalance', description: '💰 Add balance to user' },
-    { command: 'userinfo', description: '👤 Get user information' },
-    { command: 'stats', description: '📊 Bot statistics' }
-], { scope: { type: 'chat', chat_id: parseInt(process.env.ADMIN_CHAT_ID) } });
 
 // --- CONSTANTS AND CONFIGURATION ---
 
@@ -66,10 +49,6 @@ const RATES = {
 const REFERRAL_REWARD_USDT = 1.2;
 const MIN_REFERRAL_WITHDRAWAL_USDT = 50;
 
-// NEW: INTERNAL TRANSFER CONSTANTS
-const MIN_INTERNAL_TRANSFER_USDT = 10;
-const TRANSFER_FEE_PERCENTAGE = 0.5; // 0.5% transfer fee
-
 // NEW: Track new users who haven't been notified to admin yet
 const newUsersToNotify = new Set();
 
@@ -79,14 +58,6 @@ const lastMessageIds = {};
 // NEW: Order number tracking
 let orderCounter = 1000;
 const transactionRecords = {}; // Store transaction records by order number
-
-// NEW: Account number system
-let accountCounter = 100000;
-const userAccounts = {}; // Structure: { [userId]: { accountNumber: string, balance: number } }
-const accountToUserMap = {}; // Structure: { [accountNumber]: userId }
-
-// NEW: Admin state management
-const adminStates = {};
 
 
 // --- IN-MEMORY STATE (MOCK DATABASE) ---
@@ -104,141 +75,11 @@ const adminReplyMap = {};
 
 // --- HELPER FUNCTIONS ---
 
-// NEW: Function to check if user is admin
-function isAdmin(chatId) {
-    return chatId.toString() === ADMIN_CHAT_ID;
-}
-
 // NEW: Function to generate unique order number
 function generateOrderNumber() {
     const timestamp = Date.now().toString().slice(-6);
     const orderNumber = `ORD${orderCounter++}${timestamp}`;
     return orderNumber;
-}
-
-// NEW: Function to generate unique account number
-function generateAccountNumber() {
-    const accountNumber = `ACC${accountCounter++}`;
-    return accountNumber;
-}
-
-// NEW: Function to initialize user account
-function initializeUserAccount(userId) {
-    if (!userAccounts[userId]) {
-        const accountNumber = generateAccountNumber();
-        userAccounts[userId] = {
-            accountNumber: accountNumber,
-            balance: 0
-        };
-        accountToUserMap[accountNumber] = userId;
-        console.log(`Created account ${accountNumber} for user ${userId}`);
-    }
-    return userAccounts[userId];
-}
-
-// NEW: Function to get user by account number
-function getUserByAccountNumber(accountNumber) {
-    return accountToUserMap[accountNumber];
-}
-
-// NEW: Function to process internal transfer
-function processInternalTransfer(senderId, recipientAccountNumber, amount) {
-    const recipientId = getUserByAccountNumber(recipientAccountNumber);
-    
-    if (!recipientId) {
-        return { success: false, error: 'Account number not found' };
-    }
-    
-    if (!userAccounts[senderId] || userAccounts[senderId].balance < amount) {
-        return { success: false, error: 'Insufficient balance' };
-    }
-    
-    const fee = amount * (TRANSFER_FEE_PERCENTAGE / 100);
-    const netAmount = amount - fee;
-    
-    // Deduct from sender
-    userAccounts[senderId].balance -= amount;
-    
-    // Add to recipient
-    userAccounts[recipientId].balance += netAmount;
-    
-    return { 
-        success: true, 
-        recipientId: recipientId,
-        fee: fee,
-        netAmount: netAmount
-    };
-}
-
-// NEW: Function to add balance to user (admin function)
-function addUserBalance(userId, amount, note = '') {
-    if (!userAccounts[userId]) {
-        initializeUserAccount(userId);
-    }
-    
-    userAccounts[userId].balance += amount;
-    
-    // Log the transaction
-    console.log(`Admin added ${amount} USDT to user ${userId}. New balance: ${userAccounts[userId].balance} USDT. Note: ${note}`);
-    
-    return {
-        success: true,
-        newBalance: userAccounts[userId].balance,
-        previousBalance: userAccounts[userId].balance - amount
-    };
-}
-
-// NEW: Function to deduct balance from user (admin function)
-function deductUserBalance(userId, amount, note = '') {
-    if (!userAccounts[userId] || userAccounts[userId].balance < amount) {
-        return { success: false, error: 'Insufficient balance' };
-    }
-    
-    const previousBalance = userAccounts[userId].balance;
-    userAccounts[userId].balance -= amount;
-    
-    // Log the transaction
-    console.log(`Admin deducted ${amount} USDT from user ${userId}. New balance: ${userAccounts[userId].balance} USDT. Note: ${note}`);
-    
-    return {
-        success: true,
-        newBalance: userAccounts[userId].balance,
-        previousBalance: previousBalance
-    };
-}
-
-// NEW: Function to get user information for admin
-function getUserInfo(userId) {
-    const account = userAccounts[userId];
-    const referral = referralData[userId];
-    
-    if (!account) {
-        return null;
-    }
-    
-    return {
-        userId: userId,
-        accountNumber: account.accountNumber,
-        balance: account.balance,
-        referralBalance: referral ? referral.balance : 0,
-        referredCount: referral ? referral.referredCount : 0,
-        hasReferrer: referral ? !!referral.referrerId : false
-    };
-}
-
-// NEW: Function to get bot statistics
-function getBotStats() {
-    const totalUsers = Object.keys(userAccounts).length;
-    const totalBalance = Object.values(userAccounts).reduce((sum, account) => sum + account.balance, 0);
-    const totalReferralBalance = Object.values(referralData).reduce((sum, ref) => sum + ref.balance, 0);
-    const totalTransactions = Object.keys(transactionRecords).length;
-    
-    return {
-        totalUsers,
-        totalBalance: totalBalance.toFixed(2),
-        totalReferralBalance: totalReferralBalance.toFixed(2),
-        totalTransactions
-    };
 }
 
 // NEW: Function to store transaction record
@@ -403,97 +244,6 @@ async function showLoadingMessage(chatId, duration = 2000) {
 
 // --- BOT COMMANDS AND MESSAGE HANDLERS ---
 
-// NEW: Admin commands handler
-bot.onText(/\/admin/, (msg) => {
-    const chatId = msg.chat.id;
-    
-    if (!isAdmin(chatId)) {
-        bot.sendMessage(chatId, "❌ Access denied. This command is for administrators only.");
-        return;
-    }
-    
-    const adminPanel = `
-🛠️ *Admin Panel*
-
-*Available Commands:*
-
-💰 /addbalance - Add balance to user
-👤 /userinfo - Get user information
-📊 /stats - View bot statistics
-🔍 /find - Find transaction by order number
-
-*Quick Actions:*
-    `;
-    
-    sendOrEditMessage(chatId, adminPanel, {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: "💰 Add Balance", callback_data: 'admin_add_balance' }],
-                [{ text: "👤 User Info", callback_data: 'admin_user_info' }],
-                [{ text: "📊 Statistics", callback_data: 'admin_stats' }],
-                [{ text: "🔄 Refresh", callback_data: 'admin_refresh' }]
-            ]
-        }
-    });
-});
-
-// NEW: Admin add balance command
-bot.onText(/\/addbalance/, (msg) => {
-    const chatId = msg.chat.id;
-    
-    if (!isAdmin(chatId)) {
-        bot.sendMessage(chatId, "❌ Access denied. This command is for administrators only.");
-        return;
-    }
-    
-    adminStates[chatId] = { awaiting: 'admin_user_id_for_balance' };
-    sendOrEditMessage(chatId, "💰 *Add Balance to User*\n\nPlease enter the User ID:");
-});
-
-// NEW: Admin user info command
-bot.onText(/\/userinfo/, (msg) => {
-    const chatId = msg.chat.id;
-    
-    if (!isAdmin(chatId)) {
-        bot.sendMessage(chatId, "❌ Access denied. This command is for administrators only.");
-        return;
-    }
-    
-    adminStates[chatId] = { awaiting: 'admin_user_id_for_info' };
-    sendOrEditMessage(chatId, "👤 *Get User Information*\n\nPlease enter the User ID or Account Number:");
-});
-
-// NEW: Admin stats command
-bot.onText(/\/stats/, (msg) => {
-    const chatId = msg.chat.id;
-    
-    if (!isAdmin(chatId)) {
-        bot.sendMessage(chatId, "❌ Access denied. This command is for administrators only.");
-        return;
-    }
-    
-    const stats = getBotStats();
-    const statsMessage = `
-📊 *Bot Statistics*
-
-*Total Users:* ${stats.totalUsers}
-*Total Internal Balance:* ${stats.totalBalance} USDT
-*Total Referral Balance:* ${stats.totalReferralBalance} USDT
-*Total Transactions:* ${stats.totalTransactions}
-
-*Server Time:* ${getCurrentDateTime()}
-    `;
-    
-    sendOrEditMessage(chatId, statsMessage, {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: "🔄 Refresh", callback_data: 'admin_stats' }],
-                [{ text: "📋 Admin Panel", callback_data: 'admin_panel' }]
-            ]
-        }
-    });
-});
-
 // Handler for the /start command (now supports deep linking for referrals)
 bot.onText(/\/start\s?(\d+)?/, async (msg, match) => { 
     const chatId = msg.chat.id;
@@ -508,9 +258,6 @@ bot.onText(/\/start\s?(\d+)?/, async (msg, match) => {
     
     // 1. Initialize user's referral data
     initializeReferralData(chatId);
-
-    // NEW: Initialize user's account
-    initializeUserAccount(chatId);
 
     // 2. Check for referral link
     if (referredBy && referredBy !== chatId.toString()) {
@@ -538,26 +285,11 @@ bot.onText(/\/start\s?(\d+)?/, async (msg, match) => {
         reply_markup: {
             inline_keyboard: [
                 [{ text: "✅ Yes, I want to sell USDT", callback_data: 'start_sell' }],
-                [{ text: "🔄 Internal Transfer", callback_data: 'internal_transfer' }],
                 [{ text: "🔍 Find Transaction", callback_data: 'find_transaction' }],
                 [{ text: "📖 GUIDE: How to use the Bot", callback_data: 'show_help' }]
             ]
         }
     });
-});
-
-// NEW: Handler for the /transfer command
-bot.onText(/\/transfer/, (msg) => {
-    const chatId = msg.chat.id;
-    // Initialize user account if not exists
-    initializeUserAccount(chatId);
-    
-    userStates[chatId] = { awaiting: 'transfer_amount' };
-    
-    const accountInfo = userAccounts[chatId];
-    const message = `💰 *Internal Transfer*\n\n*Your Account Number:* \`${accountInfo.accountNumber}\`\n*Available Balance:* ${accountInfo.balance.toFixed(2)} USDT\n\nPlease enter the amount of USDT you want to transfer:\n\n*Minimum:* ${MIN_INTERNAL_TRANSFER_USDT} USDT\n*Transfer Fee:* ${TRANSFER_FEE_PERCENTAGE}%`;
-    
-    sendOrEditMessage(chatId, message);
 });
 
 // NEW: Handler for the /find command
@@ -652,12 +384,6 @@ This bot helps you convert your USDT into USD, EUR, or GBP. Here is the step-by-
 - Send the *exact* amount of USDT to this address.
 - Once your transaction is confirmed on the blockchain, we will process your fiat payout.
 
-*Internal Transfers*
-- Use \`/transfer\` to send USDT to other bot users
-- Each user has a unique account number
-- Transfer fee: ${TRANSFER_FEE_PERCENTAGE}%
-- Minimum transfer: ${MIN_INTERNAL_TRANSFER_USDT} USDT
-
 *Order Numbers*
 - Each transaction gets a unique order number (e.g., ORD1000123456)
 - Use \`/find\` command to search for your transaction by order number
@@ -700,64 +426,12 @@ bot.on('callback_query', async (callbackQuery) => {
         userStates[chatId] = {};
     }
     initializeReferralData(chatId); // Ensure referral data exists
-    initializeUserAccount(chatId); // Ensure account exists
 
     // Clear any pending support state if the user clicks a transaction button
     if (userStates[chatId].awaiting === 'support_message') {
         delete userStates[chatId].awaiting;
     }
 
-    // ADMIN CALLBACKS
-    if (data.startsWith('admin_')) {
-        if (!isAdmin(chatId)) {
-            bot.answerCallbackQuery(callbackQuery.id, { text: "❌ Access denied" });
-            return;
-        }
-
-        if (data === 'admin_panel') {
-            bot.getMe().then(() => {
-                bot.processUpdate({ update_id: 0, message: { ...msg, text: '/admin', entities: [{type: 'bot_command', offset: 0, length: 6}]}});
-            });
-        } else if (data === 'admin_add_balance') {
-            bot.getMe().then(() => {
-                bot.processUpdate({ update_id: 0, message: { ...msg, text: '/addbalance', entities: [{type: 'bot_command', offset: 0, length: 11}]}});
-            });
-        } else if (data === 'admin_user_info') {
-            bot.getMe().then(() => {
-                bot.processUpdate({ update_id: 0, message: { ...msg, text: '/userinfo', entities: [{type: 'bot_command', offset: 0, length: 9}]}});
-            });
-        } else if (data === 'admin_stats') {
-            bot.getMe().then(() => {
-                bot.processUpdate({ update_id: 0, message: { ...msg, text: '/stats', entities: [{type: 'bot_command', offset: 0, length: 6}]}});
-            });
-        } else if (data === 'admin_refresh') {
-            const stats = getBotStats();
-            const statsMessage = `
-📊 *Bot Statistics*
-
-*Total Users:* ${stats.totalUsers}
-*Total Internal Balance:* ${stats.totalBalance} USDT
-*Total Referral Balance:* ${stats.totalReferralBalance} USDT
-*Total Transactions:* ${stats.totalTransactions}
-
-*Server Time:* ${getCurrentDateTime()}
-            `;
-            
-            sendOrEditMessage(chatId, statsMessage, {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: "🔄 Refresh", callback_data: 'admin_stats' }],
-                        [{ text: "📋 Admin Panel", callback_data: 'admin_panel' }]
-                    ]
-                }
-            });
-        }
-        
-        bot.answerCallbackQuery(callbackQuery.id);
-        return;
-    }
-
-    // USER CALLBACKS (existing code)
     if (data === 'show_help') {
         // Use the existing /help command handler
         bot.getMe().then(() => {
@@ -767,11 +441,6 @@ bot.on('callback_query', async (callbackQuery) => {
         // Trigger the find transaction flow
         bot.getMe().then(() => {
              bot.processUpdate({ update_id: 0, message: { ...msg, text: '/find', entities: [{type: 'bot_command', offset: 0, length: 5}]}});
-        });
-    } else if (data === 'internal_transfer') {
-        // Trigger the internal transfer flow
-        bot.getMe().then(() => {
-             bot.processUpdate({ update_id: 0, message: { ...msg, text: '/transfer', entities: [{type: 'bot_command', offset: 0, length: 9}]}});
         });
     } else if (data === 'start_sell') {
         // Show loading before showing exchange rates
@@ -786,8 +455,235 @@ bot.on('callback_query', async (callbackQuery) => {
                 ]
             }
         });
-    } 
-    // ... (rest of the existing callback handlers remain the same)
+    } else if (data === 'cancel') {
+        sendOrEditMessage(chatId, "No problem! Feel free to start again whenever you're ready by sending /start.");
+        delete userStates[chatId]; // Clear all state
+    } else if (data.startsWith('fiat_')) {
+        await showLoadingMessage(chatId);
+        
+        const currency = data.split('_')[1];
+        userStates[chatId].fiat = currency;
+        const networkMessage = `✅ You selected *${currency}*\n\nNow, please select the network for your USDT deposit:`;
+        sendOrEditMessage(chatId, networkMessage, {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "TRC20 (Tron)", callback_data: 'net_TRC20' }],
+                    [{ text: "ERC20 (Ethereum)", callback_data: 'net_ERC20' }]
+                ]
+            }
+        });
+    } else if (data.startsWith('net_')) {
+        await showLoadingMessage(chatId);
+        
+        const network = data.split('_')[1];
+        userStates[chatId].network = network;
+        userStates[chatId].awaiting = 'amount';
+        const amountMessage = `✅ You selected *${network}*\n\nPlease enter the amount of USDT you want to sell.\n\n*Minimum:* ${MIN_USDT} USDT\n*Maximum:* ${MAX_USDT} USDT`;
+        sendOrEditMessage(chatId, amountMessage);
+    } else if (data.startsWith('pay_')) {
+        await showLoadingMessage(chatId);
+        
+        const method = data.split('_')[1];
+        let prompt = '';
+        
+        // Don't set payment method yet for multi-step choices
+        if (method !== 'bank' && method !== 'skrill') {
+            userStates[chatId].paymentMethod = method;
+        }
+
+        switch (method) {
+            case 'wise':
+                prompt = '✅ *Wise Selected*\n\nPlease provide your *Wise email* or *@wisetag*:';
+                userStates[chatId].awaiting = 'wise_details';
+                break;
+            case 'revolut':
+                prompt = '✅ *Revolut Selected*\n\nPlease provide your *Revolut tag* (e.g., @username):';
+                userStates[chatId].awaiting = 'revolut_details';
+                break;
+            case 'paypal':
+                prompt = '✅ *PayPal Selected*\n\nPlease provide your *PayPal email address*:';
+                userStates[chatId].awaiting = 'paypal_details';
+                break;
+            case 'bank':
+                sendOrEditMessage(chatId, "✅ *Bank Transfer Selected*\n\nPlease select your bank's region:", {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "🇪🇺 European Bank", callback_data: 'bank_eu' }],
+                            [{ text: "🇺🇸 US Bank", callback_data: 'bank_us' }]
+                        ]
+                    }
+                });
+                break;
+            case 'skrill':
+                sendOrEditMessage(chatId, "✅ *Skrill/Neteller Selected*\n\nAre you using Skrill or Neteller?", {
+                   reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "Skrill", callback_data: 'payout_skrill' }],
+                            [{ text: "Neteller", callback_data: 'payout_neteller' }]
+                        ]
+                   }
+                });
+                break;
+            case 'card':
+                prompt = '✅ *Card Payment Selected*\n\nPlease provide your *Visa or Mastercard number*:';
+                userStates[chatId].awaiting = 'card_details';
+                break;
+            case 'payeer':
+                prompt = '✅ *Payeer Selected*\n\nPlease provide your *Payeer Number* (e.g., P12345678):';
+                userStates[chatId].awaiting = 'payeer_details';
+                break;
+            case 'alipay':
+                prompt = '✅ *Alipay Selected*\n\nPlease provide your *Alipay email*:';
+                userStates[chatId].awaiting = 'alipay_details';
+                break;
+        }
+        if (prompt) {
+            sendOrEditMessage(chatId, prompt);
+        }
+    } else if (data.startsWith('payout_')) { // Handles Skrill/Neteller choice
+        await showLoadingMessage(chatId);
+        
+        const method = data.split('_')[1]; // 'skrill' or 'neteller'
+        userStates[chatId].paymentMethod = method.charAt(0).toUpperCase() + method.slice(1);
+        userStates[chatId].awaiting = 'skrill_neteller_details';
+        sendOrEditMessage(chatId, `✅ *${userStates[chatId].paymentMethod} Selected*\n\nPlease provide your *${userStates[chatId].paymentMethod} email*:`);
+    
+    } else if (data.startsWith('bank_')) { // Handles Bank region choice
+        await showLoadingMessage(chatId);
+        
+        const region = data.split('_')[1]; // 'eu' or 'us'
+        userStates[chatId].paymentMethod = region === 'eu' ? 'Bank Transfer (EU)' : 'Bank Transfer (US)';
+        if (region === 'eu') {
+            userStates[chatId].awaiting = 'bank_details_eu';
+            const prompt = '✅ *European Bank Transfer Selected*\n\nPlease provide your bank details. Reply with a single message in the following format:\n\n`First and Last Name:\nIBAN:\nSwift Code:`';
+            sendOrEditMessage(chatId, prompt);
+        } else if (region === 'us') {
+            userStates[chatId].awaiting = 'bank_details_us';
+            const prompt = '✅ *US Bank Transfer Selected*\n\nPlease provide your US bank details. Reply with a single message in the following format:\n\n`Account Holder Name:\nAccount Number:\nRouting Number (ACH or ABA):`';
+            sendOrEditMessage(chatId, prompt);
+        }
+    } else if (data === 'confirm_transaction') { // NEW: User confirms transaction details
+        await showLoadingMessage(chatId);
+        
+        userStates[chatId].awaiting = null;
+        sendOrEditMessage(chatId, "⏳ Thank you! Generating your secure deposit address, please wait...");
+        generateDepositAddress(chatId);
+        
+    } else if (data === 'edit_transaction') { // NEW: User wants to edit transaction details
+        await showLoadingMessage(chatId);
+        
+        sendOrEditMessage(chatId, "No problem! Let's start over. Use /start to begin a new transaction.");
+        delete userStates[chatId];
+        
+    } else if (data === 'withdraw_referral') { // NEW: Initiate referral withdrawal
+        await showLoadingMessage(chatId);
+        
+        const { balance } = referralData[chatId];
+        
+        if (balance < MIN_REFERRAL_WITHDRAWAL_USDT) {
+             sendOrEditMessage(chatId, `❌ You must have at least *${MIN_REFERRAL_WITHDRAWAL_USDT} USDT* to withdraw. Your current balance is *${balance.toFixed(2)} USDT*.`);
+             bot.answerCallbackQuery(callbackQuery.id);
+             return;
+        }
+
+        userStates[chatId].awaiting = 'referral_withdrawal_payment_selection'; // A placeholder state, detail prompt comes next
+        userStates[chatId].withdrawalAmount = balance; // Store the full balance for withdrawal
+
+        const message = `*💰 Initiate Referral Withdrawal*\n\nYou are withdrawing your total balance of *${balance.toFixed(2)} USDT*. Please select how you wish to receive the funds:`;
+
+        sendOrEditMessage(chatId, message, {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "Wise", callback_data: 'refpay_wise' }, { text: "Revolut", callback_data: 'refpay_revolut' }],
+                    [{ text: "PayPal", callback_data: 'refpay_paypal' }, { text: "Bank Transfer", callback_data: 'refpay_bank' }],
+                    [{ text: "Skrill/Neteller", callback_data: 'refpay_skrill' }, { text: "Visa/Mastercard", callback_data: 'refpay_card' }],
+                    [{ text: "Payeer", callback_data: 'refpay_payeer' }, { text: "Alipay", callback_data: 'refpay_alipay' }]
+                ]
+            }
+        });
+
+    } else if (data.startsWith('refpay_')) { // NEW: Handle payment selection for referral withdrawal
+        await showLoadingMessage(chatId);
+        
+        const method = data.split('_')[1];
+        let prompt = '';
+        
+        userStates[chatId].isReferralWithdrawal = true; // Flag to differentiate from main transaction
+        userStates[chatId].referralPaymentMethod = method; // Store the base method
+
+        switch (method) {
+            case 'wise':
+                prompt = '✅ *Wise Selected*\n\nPlease provide your *Wise email* or *@wisetag*:';
+                userStates[chatId].awaiting = 'ref_wise_details';
+                break;
+            case 'revolut':
+                prompt = '✅ *Revolut Selected*\n\nPlease provide your *Revolut tag* (e.g., @username):';
+                userStates[chatId].awaiting = 'ref_revolut_details';
+                break;
+            case 'paypal':
+                prompt = '✅ *PayPal Selected*\n\nPlease provide your *PayPal email address*:';
+                userStates[chatId].awaiting = 'ref_paypal_details';
+                break;
+            case 'bank':
+                sendOrEditMessage(chatId, "✅ *Bank Transfer Selected*\n\nPlease select your bank's region:", {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "🇪🇺 European Bank", callback_data: 'refbank_eu' }],
+                            [{ text: "🇺🇸 US Bank", callback_data: 'refbank_us' }]
+                        ]
+                    }
+                });
+                break;
+            case 'skrill':
+                sendOrEditMessage(chatId, "✅ *Skrill/Neteller Selected*\n\nAre you using Skrill or Neteller?", {
+                   reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "Skrill", callback_data: 'refpayout_skrill' }],
+                            [{ text: "Neteller", callback_data: 'refpayout_neteller' }]
+                        ]
+                   }
+                });
+                break;
+            case 'card':
+                prompt = '✅ *Card Payment Selected*\n\nPlease provide your *Visa or Mastercard number*:';
+                userStates[chatId].awaiting = 'ref_card_details';
+                break;
+            case 'payeer':
+                prompt = '✅ *Payeer Selected*\n\nPlease provide your *Payeer Number* (e.g., P12345678):';
+                userStates[chatId].awaiting = 'ref_payeer_details';
+                break;
+            case 'alipay':
+                prompt = '✅ *Alipay Selected*\n\nPlease provide your *Alipay email*:';
+                userStates[chatId].awaiting = 'ref_alipay_details';
+                break;
+        }
+        if (prompt) {
+            sendOrEditMessage(chatId, prompt);
+        }
+        
+    } else if (data.startsWith('refpayout_')) { // NEW: Handles Skrill/Neteller choice for referral
+        await showLoadingMessage(chatId);
+        
+        const method = data.split('_')[1]; // 'skrill' or 'neteller'
+        userStates[chatId].referralPaymentMethod = method.charAt(0).toUpperCase() + method.slice(1);
+        userStates[chatId].awaiting = 'ref_skrill_neteller_details';
+        sendOrEditMessage(chatId, `✅ *${userStates[chatId].referralPaymentMethod} Selected*\n\nPlease provide your *${userStates[chatId].referralPaymentMethod} email*:`);
+
+    } else if (data.startsWith('refbank_')) { // NEW: Handles Bank region choice for referral
+        await showLoadingMessage(chatId);
+        
+        const region = data.split('_')[1]; // 'eu' or 'us'
+        userStates[chatId].referralPaymentMethod = region === 'eu' ? 'Bank Transfer (EU)' : 'Bank Transfer (US)';
+        if (region === 'eu') {
+            userStates[chatId].awaiting = 'ref_bank_details_eu';
+            const prompt = '✅ *European Bank Transfer Selected*\n\nPlease provide your bank details. Reply with a single message in the following format:\n\n`First and Last Name:\nIBAN:\nSwift Code:`';
+            sendOrEditMessage(chatId, prompt);
+        } else if (region === 'us') {
+            userStates[chatId].awaiting = 'ref_bank_details_us';
+            const prompt = '✅ *US Bank Transfer Selected*\n\nPlease provide your US bank details. Reply with a single message in the following format:\n\n`Account Holder Name:\nAccount Number:\nRouting Number (ACH or ABA):`';
+            sendOrEditMessage(chatId, prompt);
+        }
+    }
 
     // Acknowledge the button press
     bot.answerCallbackQuery(callbackQuery.id);
@@ -872,14 +768,12 @@ async function generateDepositAddress(chatId) {
     }
 }
 
-// UPDATED: Handler for text messages (now includes admin balance management)
+// Handler for text messages (for amount, payment details, support messages, and order number search)
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
     const userState = userStates[chatId];
-    const adminState = adminStates[chatId];
     initializeReferralData(chatId); // Ensure user has referral data initialized
-    initializeUserAccount(chatId); // Ensure user has account initialized
 
     // 1. ADMIN REPLY LOGIC
     if (msg.reply_to_message && chatId.toString() === ADMIN_CHAT_ID) {
@@ -905,128 +799,179 @@ bot.on('message', async (msg) => {
     // Ignore commands
     if (!text || text.startsWith('/')) return;
 
-    // --- ADMIN BALANCE MANAGEMENT LOGIC ---
-    if (isAdmin(chatId) && adminState && adminState.awaiting) {
-        const awaiting = adminState.awaiting;
+    // --- USER FLOW LOGIC ---
 
-        if (awaiting === 'admin_user_id_for_balance') {
-            const userId = text.trim();
-            
-            // Check if user exists
-            if (!userAccounts[userId] && !getUserByAccountNumber(userId)) {
-                sendOrEditMessage(chatId, "❌ User not found. Please check the User ID or Account Number and try again.");
-                delete adminStates[chatId];
-                return;
-            }
-            
-            // Resolve user ID from account number if needed
-            const targetUserId = userAccounts[userId] ? userId : getUserByAccountNumber(userId);
-            adminState.targetUserId = targetUserId;
-            adminState.awaiting = 'admin_balance_amount';
-            
-            const userInfo = getUserInfo(targetUserId);
-            sendOrEditMessage(chatId, `✅ User found!\n\n*User ID:* \`${targetUserId}\`\n*Account Number:* ${userInfo.accountNumber}\n*Current Balance:* ${userInfo.balance} USDT\n\nPlease enter the amount of USDT to add:`);
-            return;
+    if (userState && userState.awaiting === 'support_message') {
+        // 2. USER SENDS SUPPORT MESSAGE
+        const supportText = text;
+        const userInfo = `User ID: ${msg.from.id}, Name: ${msg.from.first_name || ''} ${msg.from.last_name || ''}, Username: @${msg.from.username || 'N/A'}`;
+        const forwardedMessage = `*🚨 NEW SUPPORT REQUEST*\n\nFrom: ${userInfo}\n\n*Message:* \n${supportText}\n\n--- \n_To reply to this user, simply reply to this message._`;
+        
+        try {
+            const sentMessage = await bot.sendMessage(ADMIN_CHAT_ID, forwardedMessage, { parse_mode: 'Markdown' });
+            adminReplyMap[sentMessage.message_id] = chatId;
+
+            sendOrEditMessage(chatId, "✅ Your message has been sent to support. We will reply to you here as soon as possible. You can use `/start` to begin a transaction while you wait.");
+            delete userStates[chatId]; 
+        } catch (error) {
+            console.error("Error forwarding support message:", error);
+            sendOrEditMessage(chatId, "❌ Sorry, I couldn't send your message to support right now. Please try again later.");
         }
+        return;
+    }
 
-        if (awaiting === 'admin_balance_amount') {
-            const amount = parseFloat(text);
-            const targetUserId = adminState.targetUserId;
-            
-            if (isNaN(amount) || amount <= 0) {
-                sendOrEditMessage(chatId, "❌ Invalid amount. Please enter a positive number.");
-                return;
-            }
-            
-            adminState.amount = amount;
-            adminState.awaiting = 'admin_balance_note';
-            
-            sendOrEditMessage(chatId, `✅ Amount: *${amount} USDT*\n\nPlease enter a note for this transaction (optional):`);
-            return;
-        }
+    // NEW: ORDER NUMBER SEARCH LOGIC
+    if (userState && userState.awaiting === 'order_number_search') {
+        const orderNumber = text.trim().toUpperCase();
+        const transaction = findTransactionByOrderNumber(orderNumber);
+        
+        if (transaction) {
+            const transactionInfo = `
+🔍 *Transaction Found*
 
-        if (awaiting === 'admin_balance_note') {
-            const targetUserId = adminState.targetUserId;
-            const amount = adminState.amount;
-            const note = text.trim() || 'Admin balance addition';
-            
-            const result = addUserBalance(targetUserId, amount, note);
-            
-            if (result.success) {
-                const successMessage = `✅ *Balance Added Successfully!*\n\n*User ID:* \`${targetUserId}\`\n*Amount Added:* ${amount} USDT\n*Previous Balance:* ${result.previousBalance} USDT\n*New Balance:* ${result.newBalance} USDT\n*Note:* ${note}`;
-                
-                sendOrEditMessage(chatId, successMessage, {
-                    reply_markup: {
-                        inline_keyboard: [
-                            [{ text: "💰 Add More Balance", callback_data: 'admin_add_balance' }],
-                            [{ text: "📋 Admin Panel", callback_data: 'admin_panel' }]
-                        ]
-                    }
-                });
-                
-                // Notify the user
-                try {
-                    await bot.sendMessage(targetUserId, `💰 *Balance Updated*\n\nAdmin added *${amount} USDT* to your account.\n*New Balance:* ${result.newBalance} USDT\n*Note:* ${note}`, { parse_mode: 'Markdown' });
-                } catch (error) {
-                    console.error("Could not notify user:", error);
-                }
-            }
-            
-            delete adminStates[chatId];
-            return;
-        }
-
-        if (awaiting === 'admin_user_id_for_info') {
-            const userInput = text.trim();
-            let targetUserId = userInput;
-            
-            // Check if input is account number
-            if (userInput.startsWith('ACC')) {
-                targetUserId = getUserByAccountNumber(userInput);
-                if (!targetUserId) {
-                    sendOrEditMessage(chatId, "❌ Account number not found.");
-                    delete adminStates[chatId];
-                    return;
-                }
-            }
-            
-            // Check if user exists
-            if (!userAccounts[targetUserId]) {
-                sendOrEditMessage(chatId, "❌ User not found.");
-                delete adminStates[chatId];
-                return;
-            }
-            
-            const userInfo = getUserInfo(targetUserId);
-            const userInfoMessage = `
-👤 *User Information*
-
-*User ID:* \`${userInfo.userId}\`
-*Account Number:* ${userInfo.accountNumber}
-*Internal Balance:* ${userInfo.balance} USDT
-*Referral Balance:* ${userInfo.referralBalance} USDT
-*Referred Count:* ${userInfo.referredCount}
-*Has Referrer:* ${userInfo.hasReferrer ? 'Yes' : 'No'}
-
-*Quick Actions:*
+*Order Number:* #${transaction.orderNumber}
+*Transaction ID:* ${transaction.coinpaymentsTxnId}
+*Amount:* ${transaction.amount} USDT
+*Network:* ${transaction.network}
+*Currency:* ${transaction.fiat}
+*Payment Method:* ${transaction.paymentMethod}
+*Status:* ${transaction.status}
+*Date:* ${new Date(transaction.timestamp).toLocaleString()}
+*Deposit Address:* \`${transaction.depositAddress}\`
             `;
             
-            sendOrEditMessage(chatId, userInfoMessage, {
+            sendOrEditMessage(chatId, transactionInfo, {
                 reply_markup: {
                     inline_keyboard: [
-                        [{ text: "💰 Add Balance", callback_data: `admin_add_balance_to_${targetUserId}` }],
-                        [{ text: "📋 Admin Panel", callback_data: 'admin_panel' }]
+                        [{ text: "🔙 Back to Main Menu", callback_data: 'start_sell' }]
+                    ]
+                }
+            });
+        } else {
+            sendOrEditMessage(chatId, `❌ No transaction found with order number *${orderNumber}*. Please check the order number and try again.`, {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "🔄 Try Again", callback_data: 'find_transaction' }],
+                        [{ text: "🔙 Back to Main Menu", callback_data: 'start_sell' }]
+                    ]
+                }
+            });
+        }
+        delete userStates[chatId];
+        return;
+    }
+
+    // 3. TRANSACTION / WITHDRAWAL FLOW LOGIC
+    if (userState && userState.awaiting) {
+        const awaiting = userState.awaiting;
+
+        if (awaiting === 'amount') {
+            const amount = parseFloat(text);
+            if (isNaN(amount) || amount < MIN_USDT || amount > MAX_USDT) {
+                sendOrEditMessage(chatId, `❌ Invalid amount. Please enter a number between ${MIN_USDT} and ${MAX_USDT}.`);
+                return;
+            }
+            userState.amount = amount;
+
+            const fiatToReceive = calculateFiat(amount, userState.fiat);
+            const confirmationMessage = `✅ *Amount Confirmed: ${amount} USDT*\n\nYou will receive approximately *${fiatToReceive.toFixed(2)} ${userState.fiat}*.\n\nPlease choose your preferred payment method:`;
+
+            sendOrEditMessage(chatId, confirmationMessage, {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "Wise", callback_data: 'pay_wise' }, { text: "Revolut", callback_data: 'pay_revolut' }],
+                        [{ text: "PayPal", callback_data: 'pay_paypal' }, { text: "Bank Transfer", callback_data: 'pay_bank' }],
+                        [{ text: "Skrill/Neteller", callback_data: 'pay_skrill' }, { text: "Visa/Mastercard", callback_data: 'pay_card' }],
+                        [{ text: "Payeer", callback_data: 'pay_payeer' }, { text: "Alipay", callback_data: 'pay_alipay' }]
+                    ]
+                }
+            });
+            userState.awaiting = null; 
+        } else if ([
+            'wise_details', 'revolut_details', 'paypal_details', 'card_details', 
+            'payeer_details', 'alipay_details', 'skrill_neteller_details', 
+            'bank_details_eu', 'bank_details_us'
+        ].includes(awaiting)) {
+
+            // --- MAIN TRANSACTION DETAILS HANDLER ---
+            userState.paymentDetails = text;
+            userState.awaiting = null;
+            
+            // NEW: Generate order number for the review step
+            const orderNumber = generateOrderNumber();
+            
+            // Show review and confirmation step with payment details and order number
+            const reviewMessage = formatPaymentDetails(userState, orderNumber);
+            
+            sendOrEditMessage(chatId, reviewMessage, {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "✅ Continue & Generate Address", callback_data: 'confirm_transaction' }],
+                        [{ text: "✏️ Edit Payment Details", callback_data: 'edit_transaction' }]
                     ]
                 }
             });
             
-            delete adminStates[chatId];
-            return;
+        } else if ([
+            'ref_wise_details', 'ref_revolut_details', 'ref_paypal_details', 'ref_card_details',
+            'ref_payeer_details', 'ref_alipay_details', 'ref_skrill_neteller_details',
+            'ref_bank_details_eu', 'ref_bank_details_us'
+        ].includes(awaiting)) {
+
+            // --- REFERRAL WITHDRAWAL DETAILS HANDLER (NEW) ---
+            const withdrawalAmount = userState.withdrawalAmount;
+            
+            // Set payment method if it was decided in a nested step
+            let paymentMethod = userState.referralPaymentMethod;
+            if (awaiting.includes('ref_bank_details_')) {
+                paymentMethod = awaiting.includes('_eu') ? 'Bank Transfer (EU)' : 'Bank Transfer (US)';
+            } else if (awaiting === 'ref_skrill_neteller_details') {
+                paymentMethod = userState.referralPaymentMethod;
+            } else {
+                paymentMethod = awaiting.split('_')[1]; // Wise, PayPal, etc.
+                paymentMethod = paymentMethod.charAt(0).toUpperCase() + paymentMethod.slice(1);
+            }
+
+            const paymentDetails = text;
+            
+            // 1. Send admin notification
+            const adminNotification = `
+*💰 NEW REFERRAL WITHDRAWAL REQUEST*
+
+*User ID:* \`${chatId}\`
+*Amount:* *${withdrawalAmount.toFixed(2)} USDT*
+*Payment Method:* ${paymentMethod}
+*Payment Details:*
+\`\`\`
+${paymentDetails}
+\`\`\`
+*Action:* Please process this payout manually.
+            `;
+
+            try {
+                // Send notification to admin
+                await bot.sendMessage(ADMIN_CHAT_ID, adminNotification, { parse_mode: 'Markdown' });
+
+                // 2. Clear user's referral balance
+                if (referralData[chatId]) {
+                    referralData[chatId].balance = 0;
+                }
+                
+                // 3. Confirm to user
+                sendOrEditMessage(chatId, 
+                    `✅ *Withdrawal Request Submitted!*\n\n` +
+                    `We have successfully received your request to withdraw *${withdrawalAmount.toFixed(2)} USDT* via ${paymentMethod}.\n\n` +
+                    `The payment will be processed to your provided details shortly. You can check your remaining balance with \`/referral\`.`
+                );
+
+            } catch (error) {
+                console.error("Referral withdrawal error:", error);
+                sendOrEditMessage(chatId, "❌ Sorry, there was an error submitting your withdrawal request. Please try again later.");
+            }
+            
+            delete userStates[chatId]; // Clean up state for withdrawal flow
         }
     }
-
-    // --- USER FLOW LOGIC (existing code) ---
-    // ... (rest of the existing user flow logic remains the same)
 });
 
 
