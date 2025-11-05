@@ -34,50 +34,50 @@ const MERCHANT_ID = '431eb6f352649dfdcde42b2ba8d5b6d8'; // Your Merchant ID
 const BUYER_REFUND_EMAIL = 'azelchillexa@gmail.com'; // Your refund email
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID; // ID of the admin receiving support requests
 
-// Amount limits now interpreted as USD-equivalent min/max for any coin
-const MIN_USDT = 25;     // $25 equivalent minimum
-const MAX_USDT = 50000;  // $50,000 equivalent maximum
+// Amount limits interpreted as USD-equivalent min/max for any coin
+const MIN_USD_EQ = 25;     // $25 minimum
+const MAX_USD_EQ = 50000;  // $50,000 maximum
 
 const SUPPORT_CONTACT = '@DeanAbdullah'; // REPLACE WITH YOUR SUPPORT USERNAME
 
-// --- NEW: Supported coins & network mapping ---
-const SUPPORTED_COINS = ['USDT', 'BTC', 'ETH', 'BNB'];
+// --- Supported coins & network mapping (BNB removed) ---
+const SUPPORTED_COINS = ['USDT', 'BTC', 'ETH'];
 const COIN_NETWORK_MAP = {
   USDT: { TRC20: 'USDT.TRC20', ERC20: 'USDT.ERC20' },
   BTC:  { MAIN:  'BTC' },
-  ETH:  { MAIN:  'ETH' },
-  BNB:  { BSC:   'BNB.BSC' }, // Binance Smart Chain
+  ETH:  { MAIN:  'ETH' }
 };
 
-// NEW REFERRAL CONSTANTS
+// --- Fixed USDT policy (your requested rates) ---
+const FIXED_USDT_USD = 1.12; // 1 USDT = 1.12 USD
+const FIXED_USDT_EUR = 0.98; // 1 USDT = 0.98 EUR
+const FIXED_USDT_GBP = 0.86; // 1 USDT = 0.86 GBP
+
+// REFERRAL CONSTANTS
 const REFERRAL_REWARD_USDT = 1.2;
 const MIN_REFERRAL_WITHDRAWAL_USDT = 50;
 
-// NEW: Track new users who haven't been notified to admin yet
-const newUsersToNotify = new Set();
-
-// NEW: Track last message IDs for each chat to enable message editing
+// Track last message IDs for editing
 const lastMessageIds = {};
 
-// NEW: Order number tracking
+// Order number tracking
 let orderCounter = 1000;
 const transactionRecords = {}; // Store transaction records by order number
 
 // --- IN-MEMORY STATE (MOCK DATABASE) ---
 
-// In-memory storage for user conversation state (for current transaction/support)
+// User conversation state
 const userStates = {};
 
-// In-memory storage for referral tracking (THIS SHOULD BE A PERSISTENT DATABASE IN PRODUCTION)
-// Structure: { [userId]: { referrerId: string|null, balance: number, referredCount: number, isReferralRewardClaimed: boolean } }
+// Referral tracking (should be persistent in production)
 const referralData = {}; 
 
-// Map to link forwarded admin message ID back to the original user's chat ID
+// Admin reply map
 const adminReplyMap = {};
 
 // --- HELPER FUNCTIONS ---
 
-// NEW: Live rates cache + fetcher using CoinPayments "rates" (BTC-base)
+// Live rates cache + fetcher using CoinPayments "rates" (BTC-base) for BTC/ETH; USDT uses fixed rates above
 let lastRates = null;
 let lastRatesAt = 0;
 const RATES_TTL_MS = 60 * 1000; // cache for 60s
@@ -86,8 +86,7 @@ async function fetchLiveRates() {
     const now = Date.now();
     if (lastRates && (now - lastRatesAt) < RATES_TTL_MS) return lastRates;
 
-    // CoinPayments returns BTC-based rates (rate_btc) for fiat (USD/EUR/GBP) and coins (BTC/ETH/BNB/USDT)
-    const raw = await coinpayments.rates({ short: 1 }); // set accepted:1 if you want only enabled coins
+    const raw = await coinpayments.rates({ short: 1 }); // BTC-based 'rate_btc'
     const get = s => raw[s] && raw[s].rate_btc ? parseFloat(raw[s].rate_btc) : null;
 
     const rUSD = get('USD');
@@ -96,7 +95,7 @@ async function fetchLiveRates() {
     if (!rUSD || !rEUR || !rGBP) throw new Error('Missing fiat anchors from CoinPayments rates');
 
     const price = (symbol, fiatRateBTC) => {
-        const v = get(symbol) ?? get(symbol + '.BSC'); // fallback e.g. BNB.BSC
+        const v = get(symbol);
         return v ? (v / fiatRateBTC) : null;
     };
 
@@ -104,20 +103,17 @@ async function fetchLiveRates() {
         USD: {
             BTC: price('BTC', rUSD),
             ETH: price('ETH', rUSD),
-            BNB: price('BNB', rUSD),
-            USDT: price('USDT', rUSD),
+            USDT: FIXED_USDT_USD, // fixed per request
         },
         EUR: {
             BTC: price('BTC', rEUR),
             ETH: price('ETH', rEUR),
-            BNB: price('BNB', rEUR),
-            USDT: price('USDT', rEUR),
+            USDT: FIXED_USDT_EUR, // fixed per request
         },
         GBP: {
             BTC: price('BTC', rGBP),
             ETH: price('ETH', rGBP),
-            BNB: price('BNB', rGBP),
-            USDT: price('USDT', rGBP),
+            USDT: FIXED_USDT_GBP, // fixed per request
         },
     };
 
@@ -126,37 +122,42 @@ async function fetchLiveRates() {
     return result;
 }
 
-// NEW: calculate received fiat using live rates
+// calculate received fiat; USDT uses fixed rates; BTC/ETH use live
 async function calculateFiatLive(coinSymbol, coinAmount, fiatCurrency) {
+    if (coinSymbol === 'USDT') {
+        if (fiatCurrency === 'USD') return coinAmount * FIXED_USDT_USD;
+        if (fiatCurrency === 'EUR') return coinAmount * FIXED_USDT_EUR;
+        if (fiatCurrency === 'GBP') return coinAmount * FIXED_USDT_GBP;
+    }
     const rates = await fetchLiveRates();
     const px = rates[fiatCurrency]?.[coinSymbol];
     if (!px) return 0;
     return coinAmount * px;
 }
 
-// NEW: Function to generate unique order number
+// Generate unique order number
 function generateOrderNumber() {
     const timestamp = Date.now().toString().slice(-6);
     const orderNumber = `ORD${orderCounter++}${timestamp}`;
     return orderNumber;
 }
 
-// NEW: Function to store transaction record
+// Store transaction record
 function storeTransactionRecord(orderNumber, transactionData) {
     transactionRecords[orderNumber] = {
         ...transactionData,
-        orderNumber: orderNumber,
+        orderNumber,
         timestamp: new Date().toISOString(),
         status: 'pending'
     };
 }
 
-// NEW: Function to find transaction by order number
+// Find transaction by order number
 function findTransactionByOrderNumber(orderNumber) {
     return transactionRecords[orderNumber];
 }
 
-// Function to get current formatted date and time (24-hour format)
+// Current formatted date/time
 function getCurrentDateTime() {
     const now = new Date();
     const date = now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
@@ -164,35 +165,32 @@ function getCurrentDateTime() {
     return `${date} - ${time}`;
 }
 
-// NEW: Function to initialize referral data if user is new
+// Initialize referral data
 function initializeReferralData(userId) {
     if (!referralData[userId]) {
         referralData[userId] = {
             referrerId: null,
             balance: 0,
             referredCount: 0,
-            isReferralRewardClaimed: false, // Prevents rewarding referrer multiple times
+            isReferralRewardClaimed: false,
         };
     }
 }
 
-// NEW: Function to update referrer's balance and count and notify them
+// Reward referrer + notify
 function rewardReferrer(referrerId, referredUserId) {
     if (referrerId && referralData[referrerId]) {
         referralData[referrerId].balance += REFERRAL_REWARD_USDT;
         referralData[referrerId].referredCount += 1;
-        
-        // Notify the referrer
-        bot.sendMessage(referrerId, `🎉 *New Referral Reward!* You earned *${REFERRAL_REWARD_USDT.toFixed(1)} USDT* from a successful transaction by user \`${referredUserId}\`. Your new balance is *${referralData[referrerId].balance.toFixed(2)} USDT*.`, { parse_mode: 'Markdown' });
+        bot.sendMessage(referrerId, `🎉 *Referral Reward!* You earned *${REFERRAL_REWARD_USDT.toFixed(1)} USDT* from user \`${referredUserId}\`. New balance: *${referralData[referrerId].balance.toFixed(2)} USDT*.`, { parse_mode: 'Markdown' });
         return true;
     }
     return false;
 }
 
-// NEW: Function to send new user notification to admin
+// Notify admin of new user
 function notifyAdminNewUser(userId, userInfo, referredBy = null) {
     const referralInfo = referredBy ? `\n*Referred by:* \`${referredBy}\`` : '';
-    
     const notificationMessage = `
 🆕 *NEW USER JOINED*
 
@@ -202,11 +200,10 @@ function notifyAdminNewUser(userId, userInfo, referredBy = null) {
 
 Total users: ${Object.keys(referralData).length}
     `;
-    
     bot.sendMessage(ADMIN_CHAT_ID, notificationMessage, { parse_mode: 'Markdown' });
 }
 
-// UPDATED: Function to format payment details for review (live)
+// Review summary (live)
 async function formatPaymentDetailsLive(userState, orderNumber = null) {
     const { amount, fiat, network, paymentMethod, paymentDetails, coin } = userState;
     const fiatToReceive = await calculateFiatLive(coin || 'USDT', amount, fiat);
@@ -217,14 +214,14 @@ async function formatPaymentDetailsLive(userState, orderNumber = null) {
 ${orderInfo}*Selling:* ${amount} ${coin || 'USDT'}
 *Network:* ${network}
 *Currency to Receive:* ${fiat}
-*Amount to Receive (live):* ${fiatToReceive.toFixed(2)} ${fiat}
+*Amount to Receive (current):* ${fiatToReceive.toFixed(2)} ${fiat}
 *Payment Method:* ${paymentMethod}
 *Payment Details:* 
 \`${paymentDetails}\`
 `;
 }
 
-// NEW: Function to send or edit message with tracking
+// Send or edit message (tracked)
 async function sendOrEditMessage(chatId, text, options = {}) {
     try {
         if (lastMessageIds[chatId]) {
@@ -254,33 +251,41 @@ async function sendOrEditMessage(chatId, text, options = {}) {
     }
 }
 
-// NEW: Function to clear last message ID (for starting new flows)
+// Clear tracked message id
 function clearLastMessage(chatId) {
     delete lastMessageIds[chatId];
 }
 
-// NEW: Function to show loading message
-async function showLoadingMessage(chatId, duration = 2000) {
-    const loadingMessage = await bot.sendMessage(chatId, "⏳ Processing, please wait...");
-    
+// Loading toast
+async function showLoadingMessage(chatId, duration = 1200) {
+    const loadingMessage = await bot.sendMessage(chatId, "⏳ One moment… updating things for you.");
     return new Promise((resolve) => {
         setTimeout(async () => {
-            try {
-                await bot.deleteMessage(chatId, loadingMessage.message_id);
-            } catch (error) {
-                // Ignore deletion errors
-            }
+            try { await bot.deleteMessage(chatId, loadingMessage.message_id); } catch (error) {}
             resolve();
         }, duration);
     });
 }
 
+// --- TRUST / ABOUT TEXT ---
+const ABOUT_TEXT = `
+🛡️ *About & Safety*
+
+• *Non-Custodial Flow:* You only send funds to a dedicated address generated for your order.  
+• *Order Tracking:* Every transaction has a unique order number (e.g., ORD1000123456).  
+• *Secure Processor:* We rely on reputable payment rails and industry-standard crypto tooling.  
+• *Human Support:* Real people available via */support* if anything feels unclear.  
+• *Transparent Quotes:* Live estimates with a dedicated *Refresh rates* button.
+
+_Pro tip:_ Always verify the *coin* and *network* before sending. If unsure, ask us first!
+`;
+
 // --- BOT COMMANDS AND MESSAGE HANDLERS ---
 
-// Handler for the /start command (now supports deep linking for referrals)
+// /start (supports referrals)
 bot.onText(/\/start\s?(\d+)?/, async (msg, match) => { 
     const chatId = msg.chat.id;
-    const referredBy = match ? match[1] : null; // Captured referral ID (referrer's chatId)
+    const referredBy = match ? match[1] : null;
     const firstName = msg.from.first_name || '';
     const lastName = msg.from.last_name || '';
     const username = msg.from.username ? `@${msg.from.username}` : 'N/A';
@@ -289,12 +294,11 @@ bot.onText(/\/start\s?(\d+)?/, async (msg, match) => {
     const isNewUser = !referralData[chatId];
     initializeReferralData(chatId);
 
-    // Referral link bind
     if (referredBy && referredBy !== chatId.toString()) {
         const referrerIdStr = referredBy.toString();
         if (referralData[referrerIdStr] && !referralData[chatId].referrerId) {
             referralData[chatId].referrerId = referrerIdStr;
-            bot.sendMessage(chatId, `🤝 You've been referred by user ID \`${referrerIdStr}\`! Once you complete your first transaction, your referrer will be rewarded.`, { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, `🤝 Sweet — you joined with a referral from \`${referrerIdStr}\`! Once you complete your first transaction, they’ll get a reward.`, { parse_mode: 'Markdown' });
         }
     }
     
@@ -306,34 +310,43 @@ bot.onText(/\/start\s?(\d+)?/, async (msg, match) => {
         notifyAdminNewUser(chatId, userInfo, referredBy);
     }
 
-    const welcomeMessage = `Hello, *${firstName}*!\n\nWelcome to the Crypto Seller Bot. Current time: *${dateTime}*.\n\nI can help you easily sell *BTC, ETH, BNB (BSC), or USDT* for fiat currency (*USD, EUR, GBP*).\n\nReady to start?`;
+    const welcomeMessage = 
+`Hey *${firstName}*! 👋
+
+Welcome to your friendly crypto off-ramp.  
+I can help you sell *BTC, ETH, or USDT* and receive *USD, EUR, or GBP* — fast and simple.
+
+*It’s currently:* _${dateTime}_
+
+Ready to go? Tap a button below 👇`;
 
     await sendOrEditMessage(chatId, welcomeMessage, {
         reply_markup: {
             inline_keyboard: [
-                [{ text: "✅ Yes, I want to sell crypto", callback_data: 'start_sell' }],
+                [{ text: "✅ Start selling", callback_data: 'start_sell' }],
+                [{ text: "ℹ️ About & Safety", callback_data: 'show_about' }],
                 [{ text: "🔍 Find Transaction", callback_data: 'find_transaction' }],
-                [{ text: "📖 GUIDE: How to use the Bot", callback_data: 'show_help' }]
+                [{ text: "📖 GUIDE / FAQ", callback_data: 'show_help' }]
             ]
         }
     });
 });
 
-// NEW: Handler for the /find command
+// /find
 bot.onText(/\/find/, (msg) => {
     const chatId = msg.chat.id;
     userStates[chatId] = { awaiting: 'order_number_search' };
-    sendOrEditMessage(chatId, "🔍 *Find Transaction*\n\nPlease enter your order number (e.g., ORD1000123456):");
+    sendOrEditMessage(chatId, "🔎 *Find your order*\n\nPlease enter your order number (e.g., ORD1000123456):");
 });
 
-// NEW: Handler for the /referral command
+// /referral
 bot.onText(/\/referral/, async (msg) => {
     const chatId = msg.chat.id;
     initializeReferralData(chatId);
 
     const { balance, referredCount } = referralData[chatId];
     
-    let botUsername = 'USDT_Seller_Bot'; // Default placeholder
+    let botUsername = 'Crypto_Seller_Bot';
     try {
         const me = await bot.getMe();
         botUsername = me.username;
@@ -342,7 +355,6 @@ bot.onText(/\/referral/, async (msg) => {
     }
     
     const referralLink = `https://t.me/${botUsername}?start=${chatId}`;
-    
     const isReadyToWithdraw = balance >= MIN_REFERRAL_WITHDRAWAL_USDT;
     const missingAmount = MIN_REFERRAL_WITHDRAWAL_USDT - balance;
     
@@ -352,92 +364,74 @@ bot.onText(/\/referral/, async (msg) => {
     } 
 
     const message = `
-*🤝 Referral Program Status*
+*🤝 Referral Program*
 
-*Your ID:* \`${chatId}\`
-*Your Referral Link:* \`${referralLink}\`
+• *Your ID:* \`${chatId}\`  
+• *Your Link:* \`${referralLink}\`
 
-*Current Balance:* *${balance.toFixed(2)} USDT*
-*Successful Referrals:* *${referredCount}*
-*Reward per Referral:* *${REFERRAL_REWARD_USDT.toFixed(1)} USDT*
+• *Balance:* *${balance.toFixed(2)} USDT*  
+• *Successful Referrals:* *${referredCount}*  
+• *Reward per Referral:* *${REFERRAL_REWARD_USDT.toFixed(1)} USDT*  
 
-*Withdrawal Minimum:* ${MIN_REFERRAL_WITHDRAWAL_USDT} USDT
-${isReadyToWithdraw 
-    ? "🎉 You are ready to withdraw your funds!" 
-    : `Keep going! You need *${missingAmount.toFixed(2)} USDT* more to reach the withdrawal minimum.`}
+*Withdrawal Minimum:* ${MIN_REFERRAL_WITHDRAWAL_USDT} USDT  
+${isReadyToWithdraw ? "🎉 You're ready to withdraw!" : `Keep going — you need *${missingAmount.toFixed(2)} USDT* more to withdraw.`}
     `;
 
     sendOrEditMessage(chatId, message, {
         reply_markup: {
             inline_keyboard: [
                 ...withdrawalButton,
-                [{ text: "🔙 Back to Main Menu", callback_data: 'start_sell' }]
+                [{ text: "🔙 Back to Menu", callback_data: 'start_sell' }]
             ]
         }
     });
 });
 
-// Handler for the /help command
+// /help
 bot.onText(/\/help/, (msg) => {
     const chatId = msg.chat.id;
     const helpMessage = `
-*❓ How to Use the Crypto Seller Bot (FAQ)*
+*📖 GUIDE / FAQ*
 
-This bot helps you convert your *BTC, ETH, BNB (BSC), or USDT* into *USD, EUR, or GBP*. Here is the step-by-step process:
+*1) Start*  
+Use \`/start\` → pick the coin (BTC/ETH/USDT) → choose payout currency (USD/EUR/GBP).
 
-*Step 1: Start a Transaction*
-- Use the \`/start\` command to begin.
-- Choose the coin you wish to sell, then your payout currency.
+*2) Network*  
+Pick the correct network (USDT on TRC20/ERC20; BTC and ETH are mainnet).  
+*Sending to the wrong network can result in loss of funds.*
 
-*Step 2: Select the Network*
-- You will be asked to select the blockchain network for your deposit.
-- ⚠️ *CRITICAL:* You *must* choose the same network that your wallet uses (e.g., for BNB use BSC, for USDT pick the correct chain like TRC20/ERC20). Sending on the wrong network will result in a loss of funds.
+*3) Amount*  
+Enter the amount. We show a live estimate (USDT uses fixed rates you see below).  
+*Min:* $${MIN_USD_EQ} | *Max:* $${MAX_USD_EQ}.
 
-*Step 3: Enter the Amount*
-- Enter the amount of the selected coin you want to sell.
-- The *minimum* is *$${MIN_USDT} equivalent* and the maximum is *$${MAX_USDT} equivalent*.
+*4) Payout Method*  
+Wise, Revolut, PayPal, Bank Transfer, Skrill/Neteller, Card, Payeer, Alipay.
 
-*Step 4: Choose Payout Method & Details*
-- Select how you'd like to receive your money (Wise, PayPal, Bank Transfer, etc.).
-- Provide the necessary payment details when prompted.
+*5) Review & Confirm*  
+We summarize everything. If all good, we generate your unique deposit address.
 
-*Step 5: Review and Confirm (Live Quote)*
-- Review all your transaction details and the live-estimated payout before proceeding.
+*6) Send & Track*  
+Send the exact amount and keep your *Order Number* to check status with \`/find\`.
 
-*Step 6: Deposit*
-- The bot will generate a unique deposit address for you.
-- Send the *exact* amount of the selected coin to this address.
-- Once your transaction is confirmed on-chain, we will process your fiat payout.
-
-*Order Numbers*
-- Each transaction gets a unique order number (e.g., ORD1000123456)
-- Use \`/find\` command to search for your transaction by order number
-- Provide order number to support for faster assistance
-
-*Need more help?*
-Please write a direct message to our support team using the \`/support\` command.
+${ABOUT_TEXT}
     `;
     sendOrEditMessage(chatId, helpMessage);
 });
 
-// New handler for the /support command
+// /support
 bot.onText(/\/support/, (msg) => {
     const chatId = msg.chat.id;
     if (userStates[chatId] && userStates[chatId].awaiting) {
-        bot.sendMessage(chatId, "⚠️ You are currently in the middle of a transaction. Please finish or start a new transaction using `/start` before contacting support.");
+        bot.sendMessage(chatId, "⚠️ You’re in the middle of a transaction. Please /start a new one or finish first, then message support.");
         return;
     }
-    
     userStates[chatId] = { awaiting: 'support_message' };
-    sendOrEditMessage(chatId, "💬 *Support Message*\n\nPlease type your question or issue in a single message. A support agent will reply to you as soon as possible.", {
-        reply_markup: {
-            force_reply: true, 
-            selective: true
-        }
+    sendOrEditMessage(chatId, "💬 *Tell us what you need*\n\nType your question or issue below in one message. A human will reply here soon.", {
+        reply_markup: { force_reply: true, selective: true }
     });
 });
 
-// Handler for all callback queries from inline buttons
+// Callback queries
 bot.on('callback_query', async (callbackQuery) => {
     const msg = callbackQuery.message;
     const chatId = msg.chat.id;
@@ -454,55 +448,69 @@ bot.on('callback_query', async (callbackQuery) => {
         bot.getMe().then(() => {
              bot.processUpdate({ update_id: 0, message: { ...msg, text: '/help', entities: [{type: 'bot_command', offset: 0, length: 5}] }});
         });
+    } else if (data === 'show_about') {
+        sendOrEditMessage(chatId, ABOUT_TEXT, {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "🔙 Back", callback_data: 'start_sell' }]
+                ]
+            }
+        });
     } else if (data === 'find_transaction') {
         bot.getMe().then(() => {
              bot.processUpdate({ update_id: 0, message: { ...msg, text: '/find', entities: [{type: 'bot_command', offset: 0, length: 5}] }});
         });
 
-    // --- START FLOW: coin picker + live price panel ---
-    } else if (data === 'start_sell') {
+    // Start or Refresh rates
+    } else if (data === 'start_sell' || data === 'refresh_rates') {
         await showLoadingMessage(chatId);
 
+        // Live panel: BTC & ETH live; USDT fixed
         let pricesLine = '';
         try {
             const live = await fetchLiveRates();
-            const p = live.USD;
+            const pUSD = live.USD;
             pricesLine =
-              `\n*Live prices (approx)*\n` +
-              `• 1 BTC ≈ $${(p.BTC ?? 0).toFixed(2)}\n` +
-              `• 1 ETH ≈ $${(p.ETH ?? 0).toFixed(2)}\n` +
-              `• 1 BNB ≈ $${(p.BNB ?? 0).toFixed(2)}\n` +
-              `• 1 USDT ≈ $${(p.USDT ?? 0).toFixed(4)}`;
+              `\n*Rates (approx)*\n` +
+              `• 1 BTC ≈ $${(pUSD.BTC ?? 0).toFixed(2)}\n` +
+              `• 1 ETH ≈ $${(pUSD.ETH ?? 0).toFixed(2)}\n` +
+              `• 1 USDT = $${FIXED_USDT_USD.toFixed(2)}  *(fixed)*\n` +
+              `• 1 USDT = €${FIXED_USDT_EUR.toFixed(2)}  *(fixed)*\n` +
+              `• 1 USDT = £${FIXED_USDT_GBP.toFixed(2)}  *(fixed)*`;
         } catch (e) {
-            pricesLine = '\n_Live pricing temporarily unavailable._';
+            pricesLine =
+              `\n_Live BTC/ETH unavailable right now._\n` +
+              `• 1 USDT = $${FIXED_USDT_USD.toFixed(2)} *(fixed)*\n` +
+              `• 1 USDT = €${FIXED_USDT_EUR.toFixed(2)} *(fixed)*\n` +
+              `• 1 USDT = £${FIXED_USDT_GBP.toFixed(2)} *(fixed)*`;
         }
 
         sendOrEditMessage(chatId,
-          `*What are you selling?*${pricesLine}`,
+          `What are you selling today? 😊${pricesLine}`,
           {
             reply_markup: {
               inline_keyboard: [
                 [{ text: "₿ Bitcoin (BTC)", callback_data: 'coin_BTC' },
                  { text: "Ξ Ethereum (ETH)", callback_data: 'coin_ETH' }],
-                [{ text: "⚡ BNB (BSC)", callback_data: 'coin_BNB' },
-                 { text: "💎 Tether (USDT)", callback_data: 'coin_USDT' }],
+                [{ text: "💎 Tether (USDT)", callback_data: 'coin_USDT' }],
+                [{ text: "🔄 Refresh rates", callback_data: 'refresh_rates' }],
                 [{ text: "🔍 Find Transaction", callback_data: 'find_transaction' }],
-                [{ text: "📖 GUIDE", callback_data: 'show_help' }]
+                [{ text: "📖 GUIDE / FAQ", callback_data: 'show_help' }]
               ]
             }
           }
         );
 
     } else if (data === 'cancel') {
-        sendOrEditMessage(chatId, "No problem! Feel free to start again whenever you're ready by sending /start.");
+        sendOrEditMessage(chatId, "No worries! Whenever you’re ready, just send /start to begin again.");
         delete userStates[chatId];
 
     // Coin selection → fiat selection
     } else if (data.startsWith('coin_')) {
-        const coin = data.split('_')[1]; // BTC/ETH/BNB/USDT
+        const coin = data.split('_')[1]; // BTC/ETH/USDT
         userStates[chatId].coin = coin;
 
-        sendOrEditMessage(chatId, `✅ You chose *${coin}*.\n\nWhich currency would you like to receive?`, {
+        sendOrEditMessage(chatId, `✅ Great — *${coin}* selected.\n\nWhich currency would you like to receive?`, {
             reply_markup: {
                 inline_keyboard: [
                     [{ text: "🇺🇸 USD", callback_data: 'fiat_USD' },
@@ -521,7 +529,7 @@ bot.on('callback_query', async (callbackQuery) => {
 
         const c = userStates[chatId].coin || 'USDT';
         if (c === 'USDT') {
-            sendOrEditMessage(chatId, `✅ *${currency}* selected.\n\nSelect your ${c} network:`, {
+            sendOrEditMessage(chatId, `✅ *${currency}* selected.\n\nPlease pick your ${c} network:`, {
                 reply_markup: {
                     inline_keyboard: [
                         [{ text: "TRC20 (Tron)", callback_data: 'net_TRC20' }],
@@ -529,35 +537,27 @@ bot.on('callback_query', async (callbackQuery) => {
                     ]
                 }
             });
-        } else if (c === 'BNB') {
-            sendOrEditMessage(chatId, `✅ *${currency}* selected.\n\nSelect your ${c} network:`, {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: "BNB Smart Chain (BSC)", callback_data: 'net_BSC' }]
-                    ]
-                }
-            });
         } else if (c === 'BTC') {
             userStates[chatId].network = 'MAIN';
             userStates[chatId].awaiting = 'amount';
-            sendOrEditMessage(chatId, `✅ BTC (Bitcoin mainnet).\n\nPlease enter the *amount of BTC* you want to sell.\n\n*Minimum:* $${MIN_USDT} equivalent\n*Maximum:* $${MAX_USDT} equivalent`);
+            sendOrEditMessage(chatId, `✅ BTC (Bitcoin mainnet).\n\nPlease enter the *amount of BTC* to sell.\n\n*Minimum:* $${MIN_USD_EQ}\n*Maximum:* $${MAX_USD_EQ}`);
         } else if (c === 'ETH') {
             userStates[chatId].network = 'MAIN';
             userStates[chatId].awaiting = 'amount';
-            sendOrEditMessage(chatId, `✅ ETH (Ethereum mainnet).\n\nPlease enter the *amount of ETH* you want to sell.\n\n*Minimum:* $${MIN_USDT} equivalent\n*Maximum:* $${MAX_USDT} equivalent`);
+            sendOrEditMessage(chatId, `✅ ETH (Ethereum mainnet).\n\nPlease enter the *amount of ETH* to sell.\n\n*Minimum:* $${MIN_USD_EQ}\n*Maximum:* $${MAX_USD_EQ}`);
         }
 
-    // Network picked (TRC20/ERC20/BSC) → ask for amount
+    // Network picked (TRC20/ERC20) → ask for amount
     } else if (data.startsWith('net_')) {
         await showLoadingMessage(chatId);
         
-        const net = data.split('_')[1]; // TRC20/ERC20/BSC
-        userStates[chatId].network = (net === 'BSC') ? 'BSC' : net;
+        const net = data.split('_')[1]; // TRC20/ERC20
+        userStates[chatId].network = net;
         userStates[chatId].awaiting = 'amount';
 
         const coin = userStates[chatId].coin || 'USDT';
         sendOrEditMessage(chatId,
-          `✅ ${coin} on *${userStates[chatId].network}*.\n\nPlease enter the amount of *${coin}* you want to sell.\n\n*Minimum:* $${MIN_USDT} equivalent\n*Maximum:* $${MAX_USDT} equivalent`
+          `✅ ${coin} on *${userStates[chatId].network}*.\n\nPlease enter the amount of *${coin}* you want to sell.\n\n*Minimum:* $${MIN_USD_EQ}\n*Maximum:* $${MAX_USD_EQ}`
         );
 
     } else if (data.startsWith('pay_')) {
@@ -572,19 +572,19 @@ bot.on('callback_query', async (callbackQuery) => {
 
         switch (method) {
             case 'wise':
-                prompt = '✅ *Wise Selected*\n\nPlease provide your *Wise email* or *@wisetag*:';
+                prompt = '✅ *Wise Selected*\n\nPlease share your *Wise email* or *@wisetag*:';
                 userStates[chatId].awaiting = 'wise_details';
                 break;
             case 'revolut':
-                prompt = '✅ *Revolut Selected*\n\nPlease provide your *Revolut tag* (e.g., @username):';
+                prompt = '✅ *Revolut Selected*\n\nPlease share your *Revolut tag* (e.g., @username):';
                 userStates[chatId].awaiting = 'revolut_details';
                 break;
             case 'paypal':
-                prompt = '✅ *PayPal Selected*\n\nPlease provide your *PayPal email address*:';
+                prompt = '✅ *PayPal Selected*\n\nPlease share your *PayPal email address*:';
                 userStates[chatId].awaiting = 'paypal_details';
                 break;
             case 'bank':
-                sendOrEditMessage(chatId, "✅ *Bank Transfer Selected*\n\nPlease select your bank's region:", {
+                sendOrEditMessage(chatId, "✅ *Bank Transfer Selected*\n\nPlease choose your bank’s region:", {
                     reply_markup: {
                         inline_keyboard: [
                             [{ text: "🇪🇺 European Bank", callback_data: 'bank_eu' }],
@@ -594,7 +594,7 @@ bot.on('callback_query', async (callbackQuery) => {
                 });
                 break;
             case 'skrill':
-                sendOrEditMessage(chatId, "✅ *Skrill/Neteller Selected*\n\nAre you using Skrill or Neteller?", {
+                sendOrEditMessage(chatId, "✅ *Skrill/Neteller Selected*\n\nWhich one are you using?", {
                    reply_markup: {
                         inline_keyboard: [
                             [{ text: "Skrill", callback_data: 'payout_skrill' }],
@@ -604,15 +604,15 @@ bot.on('callback_query', async (callbackQuery) => {
                 });
                 break;
             case 'card':
-                prompt = '✅ *Card Payment Selected*\n\nPlease provide your *Visa or Mastercard number*:';
+                prompt = '✅ *Card Payment Selected*\n\nPlease share your *Visa or Mastercard number*:';
                 userStates[chatId].awaiting = 'card_details';
                 break;
             case 'payeer':
-                prompt = '✅ *Payeer Selected*\n\nPlease provide your *Payeer Number* (e.g., P12345678):';
+                prompt = '✅ *Payeer Selected*\n\nPlease share your *Payeer Number* (e.g., P12345678):';
                 userStates[chatId].awaiting = 'payeer_details';
                 break;
             case 'alipay':
-                prompt = '✅ *Alipay Selected*\n\nPlease provide your *Alipay email*:';
+                prompt = '✅ *Alipay Selected*\n\nPlease share your *Alipay email*:';
                 userStates[chatId].awaiting = 'alipay_details';
                 break;
         }
@@ -624,7 +624,7 @@ bot.on('callback_query', async (callbackQuery) => {
         const method = data.split('_')[1]; // 'skrill' or 'neteller'
         userStates[chatId].paymentMethod = method.charAt(0).toUpperCase() + method.slice(1);
         userStates[chatId].awaiting = 'skrill_neteller_details';
-        sendOrEditMessage(chatId, `✅ *${userStates[chatId].paymentMethod} Selected*\n\nPlease provide your *${userStates[chatId].paymentMethod} email*:`);
+        sendOrEditMessage(chatId, `✅ *${userStates[chatId].paymentMethod} Selected*\n\nPlease share your *${userStates[chatId].paymentMethod} email*:`);
 
     } else if (data.startsWith('bank_')) {
         await showLoadingMessage(chatId);
@@ -633,25 +633,23 @@ bot.on('callback_query', async (callbackQuery) => {
         userStates[chatId].paymentMethod = region === 'eu' ? 'Bank Transfer (EU)' : 'Bank Transfer (US)';
         if (region === 'eu') {
             userStates[chatId].awaiting = 'bank_details_eu';
-            const prompt = '✅ *European Bank Transfer Selected*\n\nPlease provide your bank details. Reply with a single message in the following format:\n\n`First and Last Name:\nIBAN:\nSwift Code:`';
+            const prompt = '✅ *European Bank Transfer*\n\nReply in one message:\n\n`First and Last Name:\nIBAN:\nSwift Code:`';
             sendOrEditMessage(chatId, prompt);
         } else if (region === 'us') {
             userStates[chatId].awaiting = 'bank_details_us';
-            const prompt = '✅ *US Bank Transfer Selected*\n\nPlease provide your US bank details. Reply with a single message in the following format:\n\n`Account Holder Name:\nAccount Number:\nRouting Number (ACH or ABA):`';
+            const prompt = '✅ *US Bank Transfer*\n\nReply in one message:\n\n`Account Holder Name:\nAccount Number:\nRouting Number (ACH or ABA):`';
             sendOrEditMessage(chatId, prompt);
         }
 
     } else if (data === 'confirm_transaction') {
         await showLoadingMessage(chatId);
-        
         userStates[chatId].awaiting = null;
-        sendOrEditMessage(chatId, "⏳ Thank you! Generating your secure deposit address, please wait...");
+        sendOrEditMessage(chatId, "🔐 Thanks! Creating a secure deposit address for you…");
         generateDepositAddress(chatId);
         
     } else if (data === 'edit_transaction') {
         await showLoadingMessage(chatId);
-        
-        sendOrEditMessage(chatId, "No problem! Let's start over. Use /start to begin a new transaction.");
+        sendOrEditMessage(chatId, "No problem — let’s restart. Send /start when you’re ready.");
         delete userStates[chatId];
 
     } else if (data === 'withdraw_referral') {
@@ -659,7 +657,7 @@ bot.on('callback_query', async (callbackQuery) => {
         
         const { balance } = referralData[chatId];
         if (balance < MIN_REFERRAL_WITHDRAWAL_USDT) {
-             sendOrEditMessage(chatId, `❌ You must have at least *${MIN_REFERRAL_WITHDRAWAL_USDT} USDT* to withdraw. Your current balance is *${balance.toFixed(2)} USDT*.`);
+             sendOrEditMessage(chatId, `❌ Minimum to withdraw is *${MIN_REFERRAL_WITHDRAWAL_USDT} USDT*. Your balance is *${balance.toFixed(2)} USDT*.`);
              bot.answerCallbackQuery(callbackQuery.id);
              return;
         }
@@ -667,7 +665,7 @@ bot.on('callback_query', async (callbackQuery) => {
         userStates[chatId].awaiting = 'referral_withdrawal_payment_selection';
         userStates[chatId].withdrawalAmount = balance;
 
-        const message = `*💰 Initiate Referral Withdrawal*\n\nYou are withdrawing your total balance of *${balance.toFixed(2)} USDT*. Please select how you wish to receive the funds:`;
+        const message = `*💰 Withdraw Referral Balance*\n\nBalance to withdraw: *${balance.toFixed(2)} USDT*.\nPick your preferred payout method:`;
 
         sendOrEditMessage(chatId, message, {
             reply_markup: {
@@ -691,19 +689,19 @@ bot.on('callback_query', async (callbackQuery) => {
 
         switch (method) {
             case 'wise':
-                prompt = '✅ *Wise Selected*\n\nPlease provide your *Wise email* or *@wisetag*:';
+                prompt = '✅ *Wise Selected*\n\nPlease share your *Wise email* or *@wisetag*:';
                 userStates[chatId].awaiting = 'ref_wise_details';
                 break;
             case 'revolut':
-                prompt = '✅ *Revolut Selected*\n\nPlease provide your *Revolut tag* (e.g., @username):';
+                prompt = '✅ *Revolut Selected*\n\nPlease share your *Revolut tag* (e.g., @username):';
                 userStates[chatId].awaiting = 'ref_revolut_details';
                 break;
             case 'paypal':
-                prompt = '✅ *PayPal Selected*\n\nPlease provide your *PayPal email address*:';
+                prompt = '✅ *PayPal Selected*\n\nPlease share your *PayPal email address*:';
                 userStates[chatId].awaiting = 'ref_paypal_details';
                 break;
             case 'bank':
-                sendOrEditMessage(chatId, "✅ *Bank Transfer Selected*\n\nPlease select your bank's region:", {
+                sendOrEditMessage(chatId, "✅ *Bank Transfer Selected*\n\nPlease choose your bank’s region:", {
                     reply_markup: {
                         inline_keyboard: [
                             [{ text: "🇪🇺 European Bank", callback_data: 'refbank_eu' }],
@@ -713,7 +711,7 @@ bot.on('callback_query', async (callbackQuery) => {
                 });
                 break;
             case 'skrill':
-                sendOrEditMessage(chatId, "✅ *Skrill/Neteller Selected*\n\nAre you using Skrill or Neteller?", {
+                sendOrEditMessage(chatId, "✅ *Skrill/Neteller Selected*\n\nWhich one are you using?", {
                    reply_markup: {
                         inline_keyboard: [
                             [{ text: "Skrill", callback_data: 'refpayout_skrill' }],
@@ -723,15 +721,15 @@ bot.on('callback_query', async (callbackQuery) => {
                 });
                 break;
             case 'card':
-                prompt = '✅ *Card Payment Selected*\n\nPlease provide your *Visa or Mastercard number*:';
+                prompt = '✅ *Card Payment Selected*\n\nPlease share your *Visa or Mastercard number*:';
                 userStates[chatId].awaiting = 'ref_card_details';
                 break;
             case 'payeer':
-                prompt = '✅ *Payeer Selected*\n\nPlease provide your *Payeer Number* (e.g., P12345678):';
+                prompt = '✅ *Payeer Selected*\n\nPlease share your *Payeer Number* (e.g., P12345678):';
                 userStates[chatId].awaiting = 'ref_payeer_details';
                 break;
             case 'alipay':
-                prompt = '✅ *Alipay Selected*\n\nPlease provide your *Alipay email*:';
+                prompt = '✅ *Alipay Selected*\n\nPlease share your *Alipay email*:';
                 userStates[chatId].awaiting = 'ref_alipay_details';
                 break;
         }
@@ -743,7 +741,7 @@ bot.on('callback_query', async (callbackQuery) => {
         const method = data.split('_')[1]; // 'skrill' or 'neteller'
         userStates[chatId].referralPaymentMethod = method.charAt(0).toUpperCase() + method.slice(1);
         userStates[chatId].awaiting = 'ref_skrill_neteller_details';
-        sendOrEditMessage(chatId, `✅ *${userStates[chatId].referralPaymentMethod} Selected*\n\nPlease provide your *${userStates[chatId].referralPaymentMethod} email*:`);
+        sendOrEditMessage(chatId, `✅ *${userStates[chatId].referralPaymentMethod} Selected*\n\nPlease share your *${userStates[chatId].referralPaymentMethod} email*:`);
 
     } else if (data.startsWith('refbank_')) {
         await showLoadingMessage(chatId);
@@ -752,11 +750,11 @@ bot.on('callback_query', async (callbackQuery) => {
         userStates[chatId].referralPaymentMethod = region === 'eu' ? 'Bank Transfer (EU)' : 'Bank Transfer (US)';
         if (region === 'eu') {
             userStates[chatId].awaiting = 'ref_bank_details_eu';
-            const prompt = '✅ *European Bank Transfer Selected*\n\nPlease provide your bank details. Reply with a single message in the following format:\n\n`First and Last Name:\nIBAN:\nSwift Code:`';
+            const prompt = '✅ *European Bank Transfer*\n\nReply in one message:\n\n`First and Last Name:\nIBAN:\nSwift Code:`';
             sendOrEditMessage(chatId, prompt);
         } else if (region === 'us') {
             userStates[chatId].awaiting = 'ref_bank_details_us';
-            const prompt = '✅ *US Bank Transfer Selected*\n\nPlease provide your US bank details. Reply with a single message in the following format:\n\n`Account Holder Name:\nAccount Number:\nRouting Number (ACH or ABA):`';
+            const prompt = '✅ *US Bank Transfer*\n\nReply in one message:\n\n`Account Holder Name:\nAccount Number:\nRouting Number (ACH or ABA):`';
             sendOrEditMessage(chatId, prompt);
         }
     }
@@ -764,7 +762,7 @@ bot.on('callback_query', async (callbackQuery) => {
     bot.answerCallbackQuery(callbackQuery.id);
 });
 
-// UPDATED: Function to generate deposit address after confirmation (coin/network aware)
+// Create deposit address (coin/network-aware)
 async function generateDepositAddress(chatId) {
     const userState = userStates[chatId];
     
@@ -775,8 +773,6 @@ async function generateDepositAddress(chatId) {
         let coinCurrency;
         if (coin === 'USDT') {
             coinCurrency = COIN_NETWORK_MAP.USDT[net]; // TRC20/ERC20
-        } else if (coin === 'BNB') {
-            coinCurrency = COIN_NETWORK_MAP.BNB.BSC;   // BNB.BSC
         } else if (coin === 'BTC') {
             coinCurrency = COIN_NETWORK_MAP.BTC.MAIN;  // BTC
         } else if (coin === 'ETH') {
@@ -785,7 +781,6 @@ async function generateDepositAddress(chatId) {
         if (!coinCurrency) throw new Error(`Unsupported coin/network: ${coin} ${net}`);
 
         const paymentMethodForCustom = userState.paymentMethod || 'Unknown';
-
         const orderNumber = generateOrderNumber();
         
         const transactionOptions = {
@@ -824,48 +819,48 @@ async function generateDepositAddress(chatId) {
         }
 
         const depositInfo = 
-            `✅ *Deposit Address Generated!*\n\n` +
+            `✅ *Deposit Address Ready!*\n\n` +
             `*Order Number:* #${orderNumber}\n*Transaction ID:* ${result.txn_id}\n\n` +
-            `Please send exactly *${result.amount} ${coin}* (${net}) to the address below:\n\n` +
+            `Please send exactly *${result.amount} ${coin}* (${net}) to:\n\n` +
             `\`${result.address}\`\n\n` +
-            `⏳ *Awaiting payment confirmation...*\n\n` +
+            `⏳ *Waiting for network confirmations…*\n\n` +
             `*Payout Method:* ${paymentMethodForCustom}\n` +
             `*Payout Details:* \n\`${userState.paymentDetails}\`\n\n` +
-            `⚠️ *IMPORTANT:* Send only ${coin} on the ${net} network to this address. Sending any other coin or using a different network may result in the loss of your funds.\n\n` +
-            `💡 *Tip:* Save your order number (#${orderNumber}) for future reference. Use \`/find\` command to check your transaction status.`;
+            `⚠️ *Important:* Send only ${coin} on the ${net} network to this address. Other assets or networks may result in loss of funds.\n\n` +
+            `💡 *Tip:* Save your order number (#${orderNumber}) to check status with \`/find\`.`;
 
         sendOrEditMessage(chatId, depositInfo);
         delete userStates[chatId];
 
     } catch (error) {
         console.error("CoinPayments API Error:", error);
-        sendOrEditMessage(chatId, "❌ Sorry, there was an error generating your deposit address. Please try again later or contact support.");
+        sendOrEditMessage(chatId, "❌ Sorry — something went wrong while generating your deposit address. Please try again or contact */support*.");
     }
 }
 
-// Handler for text messages (for amount, payment details, support messages, and order number search)
+// Message handler (support, order search, amount & payout details)
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
     const userState = userStates[chatId];
     initializeReferralData(chatId);
 
-    // 1. ADMIN REPLY LOGIC
+    // Admin reply
     if (msg.reply_to_message && chatId.toString() === ADMIN_CHAT_ID) {
         const forwardedMessageId = msg.reply_to_message.message_id;
         const originalUserChatId = adminReplyMap[forwardedMessageId];
 
         if (originalUserChatId) {
             try {
-                await bot.sendMessage(originalUserChatId, `*📢 Support Reply from Admin:*\n\n${text}`, { parse_mode: 'Markdown' });
-                await bot.sendMessage(chatId, "✅ Reply successfully sent to the user.");
+                await bot.sendMessage(originalUserChatId, `📢 *Support Reply*\n\n${text}`, { parse_mode: 'Markdown' });
+                await bot.sendMessage(chatId, "✅ Reply sent to user.");
                 delete adminReplyMap[forwardedMessageId]; 
             } catch (e) {
                 console.error("Error sending reply back to user:", e);
-                await bot.sendMessage(chatId, "❌ Error sending reply back to the user. User may have blocked the bot.");
+                await bot.sendMessage(chatId, "❌ Couldn’t deliver reply. The user may have blocked the bot.");
             }
         } else {
-            bot.sendMessage(chatId, "I can't match that reply to an active support request.");
+            bot.sendMessage(chatId, "Hmm, I can’t match that reply to an active support ticket.");
         }
         return;
     }
@@ -873,28 +868,26 @@ bot.on('message', async (msg) => {
     // Ignore commands
     if (!text || text.startsWith('/')) return;
 
-    // --- USER FLOW LOGIC ---
-
-    // 2. USER SENDS SUPPORT MESSAGE
+    // Support message
     if (userState && userState.awaiting === 'support_message') {
         const supportText = text;
         const userInfo = `User ID: ${msg.from.id}, Name: ${msg.from.first_name || ''} ${msg.from.last_name || ''}, Username: @${msg.from.username || 'N/A'}`;
-        const forwardedMessage = `*🚨 NEW SUPPORT REQUEST*\n\nFrom: ${userInfo}\n\n*Message:* \n${supportText}\n\n--- \n_To reply to this user, simply reply to this message._`;
+        const forwardedMessage = `*🚨 NEW SUPPORT REQUEST*\n\nFrom: ${userInfo}\n\n*Message:* \n${supportText}\n\n--- \n_Reply to this message to respond to the user._`;
         
         try {
             const sentMessage = await bot.sendMessage(ADMIN_CHAT_ID, forwardedMessage, { parse_mode: 'Markdown' });
             adminReplyMap[sentMessage.message_id] = chatId;
 
-            sendOrEditMessage(chatId, "✅ Your message has been sent to support. We will reply to you here as soon as possible. You can use `/start` to begin a transaction while you wait.");
+            sendOrEditMessage(chatId, "✅ Thanks! Your message is with support. We’ll reply here shortly. You can also */start* a new transaction anytime.");
             delete userStates[chatId]; 
         } catch (error) {
             console.error("Error forwarding support message:", error);
-            sendOrEditMessage(chatId, "❌ Sorry, I couldn't send your message to support right now. Please try again later.");
+            sendOrEditMessage(chatId, "❌ Sorry, we couldn’t reach support right now. Please try again later.");
         }
         return;
     }
 
-    // NEW: ORDER NUMBER SEARCH LOGIC
+    // Order search
     if (userState && userState.awaiting === 'order_number_search') {
         const orderNumber = text.trim().toUpperCase();
         const transaction = findTransactionByOrderNumber(orderNumber);
@@ -914,20 +907,19 @@ bot.on('message', async (msg) => {
 *Date:* ${new Date(transaction.timestamp).toLocaleString()}
 *Deposit Address:* \`${transaction.depositAddress}\`
             `;
-            
             sendOrEditMessage(chatId, transactionInfo, {
                 reply_markup: {
                     inline_keyboard: [
-                        [{ text: "🔙 Back to Main Menu", callback_data: 'start_sell' }]
+                        [{ text: "🔙 Back to Menu", callback_data: 'start_sell' }]
                     ]
                 }
             });
         } else {
-            sendOrEditMessage(chatId, `❌ No transaction found with order number *${orderNumber}*. Please check the order number and try again.`, {
+            sendOrEditMessage(chatId, `❌ No transaction found with order number *${orderNumber}*.\nPlease check it and try again.`, {
                 reply_markup: {
                     inline_keyboard: [
                         [{ text: "🔄 Try Again", callback_data: 'find_transaction' }],
-                        [{ text: "🔙 Back to Main Menu", callback_data: 'start_sell' }]
+                        [{ text: "🔙 Back to Menu", callback_data: 'start_sell' }]
                     ]
                 }
             });
@@ -936,15 +928,15 @@ bot.on('message', async (msg) => {
         return;
     }
 
-    // 3. TRANSACTION / WITHDRAWAL FLOW LOGIC
+    // Transaction / Withdrawal flow
     if (userState && userState.awaiting) {
         const awaiting = userState.awaiting;
 
-        // Amount handling (validate by USD-equivalent live pricing)
+        // Amount input: validate using USD-equivalent (USDT uses fixed USD rate)
         if (awaiting === 'amount') {
             const amount = parseFloat(text);
             if (isNaN(amount) || amount <= 0) {
-                sendOrEditMessage(chatId, `❌ Invalid amount. Please enter a positive number.`);
+                sendOrEditMessage(chatId, `❌ That doesn’t look like a valid number. Please enter a positive amount.`);
                 return;
             }
 
@@ -953,24 +945,31 @@ bot.on('message', async (msg) => {
             // Validate min/max via USD value
             let usdValue = 0;
             try {
-                const liveUSD = (await fetchLiveRates()).USD;
-                const px = liveUSD[coin];
-                usdValue = px ? amount * px : 0;
+                if (coin === 'USDT') {
+                    usdValue = amount * FIXED_USDT_USD;
+                } else {
+                    const liveUSD = (await fetchLiveRates()).USD;
+                    const px = liveUSD[coin];
+                    usdValue = px ? amount * px : 0;
+                }
             } catch (_) {}
 
             if (!usdValue) {
-                sendOrEditMessage(chatId, `❌ Could not get live price for ${coin}. Please try again.`);
+                sendOrEditMessage(chatId, `❌ Couldn’t fetch pricing for ${coin}. Please try again in a moment.`);
                 return;
             }
-            if (usdValue < MIN_USDT || usdValue > MAX_USDT) {
-                sendOrEditMessage(chatId, `❌ Amount out of range.\nYour ${amount} ${coin} ≈ $${usdValue.toFixed(2)}.\nPlease enter an amount worth between $${MIN_USDT} and $${MAX_USDT}.`);
+            if (usdValue < MIN_USD_EQ || usdValue > MAX_USD_EQ) {
+                sendOrEditMessage(chatId, `❌ Amount out of range.\nYour ${amount} ${coin} ≈ $${usdValue.toFixed(2)}.\nPlease enter an amount worth between $${MIN_USD_EQ} and $${MAX_USD_EQ}.`);
                 return;
             }
 
             userState.amount = amount;
 
             const fiatToReceive = await calculateFiatLive(coin, amount, userState.fiat || 'USD');
-            const confirmationMessage = `✅ *Amount Confirmed:* ${amount} ${coin}\n\nYou will receive approximately *${fiatToReceive.toFixed(2)} ${userState.fiat}*.\n\nPlease choose your preferred payment method:`;
+            const confirmationMessage = 
+                `✅ *Amount confirmed:* ${amount} ${coin}\n\n` +
+                `You’ll receive approximately *${fiatToReceive.toFixed(2)} ${userState.fiat}*.\n\n` +
+                `Please choose your payout method:`;
 
             sendOrEditMessage(chatId, confirmationMessage, {
                 reply_markup: {
@@ -990,7 +989,7 @@ bot.on('message', async (msg) => {
             'bank_details_eu', 'bank_details_us'
         ].includes(awaiting)) {
 
-            // --- MAIN TRANSACTION DETAILS HANDLER ---
+            // Main transaction details
             userState.paymentDetails = text;
             userState.awaiting = null;
             
@@ -1012,7 +1011,7 @@ bot.on('message', async (msg) => {
             'ref_bank_details_eu', 'ref_bank_details_us'
         ].includes(awaiting)) {
 
-            // --- REFERRAL WITHDRAWAL DETAILS HANDLER ---
+            // Referral withdrawal
             const withdrawalAmount = userState.withdrawalAmount;
             
             let paymentMethod = userState.referralPaymentMethod;
@@ -1047,12 +1046,12 @@ ${paymentDetails}
                 }
                 sendOrEditMessage(chatId, 
                     `✅ *Withdrawal Request Submitted!*\n\n` +
-                    `We have successfully received your request to withdraw *${withdrawalAmount.toFixed(2)} USDT* via ${paymentMethod}.\n\n` +
-                    `The payment will be processed to your provided details shortly. You can check your remaining balance with \`/referral\`.`
+                    `We’ve received your request to withdraw *${withdrawalAmount.toFixed(2)} USDT* via ${paymentMethod}.\n\n` +
+                    `We’ll process it shortly. Check your remaining balance with \`/referral\`.`
                 );
             } catch (error) {
                 console.error("Referral withdrawal error:", error);
-                sendOrEditMessage(chatId, "❌ Sorry, there was an error submitting your withdrawal request. Please try again later.");
+                sendOrEditMessage(chatId, "❌ Sorry — we couldn’t submit your withdrawal right now. Please try again later.");
             }
             
             delete userStates[chatId];
