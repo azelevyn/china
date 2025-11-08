@@ -19,10 +19,6 @@ const coinpayments = new CoinPayments({
   secret: process.env.COINPAYMENTS_PRIVATE_KEY,
 });
 
-// Optional (recommended later)
-const BOT_PUBLIC_URL = process.env.BOT_PUBLIC_URL || 'https://YOUR_DOMAIN'; // for IPN/webhook
-const IPN_SECRET = process.env.IPN_SECRET || 'CHANGE_ME';
-
 bot.setMyCommands([
   { command: 'start', description: '🚀 Start' },
   { command: 'help', description: '❓ Help' },
@@ -30,9 +26,6 @@ bot.setMyCommands([
   { command: 'referral', description: '🤝 Referral' },
   { command: 'language', description: '🌐 Language' },
   { command: 'admin', description: '🛠 Admin' },
-  { command: 'p2p', description: '🧑‍🤝‍🧑 P2P Market' },
-  { command: 'offers', description: '🗂 Browse P2P Offers' },
-  { command: 'trades', description: '📑 My P2P Trades' },
 ]);
 
 /**
@@ -60,10 +53,6 @@ const FIXED_USDT_GBP = 0.86;
 const REFERRAL_REWARD_USDT = 1.2;
 const MIN_REFERRAL_WITHDRAWAL_USDT = 50;
 
-const SUPPORTED_COINS = ['USDT','BTC','ETH'];
-const SUPPORTED_FIAT  = ['USD','EUR','GBP'];
-const P2P_PAYMENT_METHODS = ['Wise','Revolut','PayPal','Bank (EU)','Bank (US)','Skrill','Neteller','Card','Payeer','Alipay'];
-
 /**
  * ──────────────────────────────────────────────────────────────────────────────
  *  IN-MEMORY (simple)
@@ -71,16 +60,10 @@ const P2P_PAYMENT_METHODS = ['Wise','Revolut','PayPal','Bank (EU)','Bank (US)','
  */
 
 let orderCounter = 1000;
-const transactionRecords = {}; // #ORD -> off-ramp transactions (your original flow)
+const transactionRecords = {}; // #ORD -> transaction
 const userStates = {};          // per-user state + settings
 const referralData = {};        // referral balances etc.
 const adminReplyMap = {};       // admin support replies
-
-// P2P
-let offerSeq = 1, tradeSeq = 1;
-const p2pOffers = {};  // offerId -> offer
-const p2pTrades = {};  // tradeId -> trade
-const reputation = {}; // userId -> {stars: number (avg), completed: number}
 
 /**
  * ──────────────────────────────────────────────────────────────────────────────
@@ -193,68 +176,11 @@ Choose an option:`,
     admin_mark_paid: '✅ Mark Paid',
     admin_mark_completed: '🎉 Mark Completed',
     admin_mark_canceled: '🛑 Cancel',
-
-    // P2P
-    p2p_title: '🧑‍🤝‍🧑 *P2P Marketplace*',
-    p2p_menu_hint: 'Create & browse offers, start trades with escrow address, and build reputation.',
-    p2p_browse: '🗂 Browse Offers',
-    p2p_create: '➕ Create Offer',
-    p2p_mine: '🧾 My Offers',
-    p2p_trades: '📑 My Trades',
-    p2p_back: '⬅️ Back',
-    p2p_offer_created: (id)=>`✅ Offer *#${id}* created and is now *active*.`,
-    p2p_offer_archived: (id)=>`🗄 Offer *#${id}* archived.`,
-    p2p_offer_relisted: (id)=>`📢 Offer *#${id}* re-listed.`,
-    p2p_no_offers: '_No offers match your filters._',
-    p2p_no_mine: '_You have no active offers._',
-    p2p_no_trades: '_You have no trades yet._',
-    p2p_offer_card: (o,ownerRep)=>`📌 *Offer #${o.id}* — ${o.side === 'BUY' ? 'Buys' : 'Sells'} *${o.coin}* for *${o.fiat}*
-• Owner: \`${o.ownerId}\` ${ownerRep}
-• Network: ${o.network}
-• Price: ${o.pricing.type === 'fixed' ? `${o.pricing.value} ${o.fiat}/${o.coin}` : `market ±${o.pricing.margin}%`}
-• Limits: ${o.minUsd}-${o.maxUsd} ${o.fiat}
-• Methods: ${o.methods.join(', ')}
-• Terms: ${o.terms || '_none_'}
-• Status: ${o.active ? '🟢 active' : '⚪ archived'}`,
-    p2p_view_offer: '👀 View',
-    p2p_start_trade: '🤝 Start Trade',
-    p2p_archive: '🗄 Archive',
-    p2p_relist: '📢 Relist',
-    p2p_cancel_trade: '🛑 Cancel',
-    p2p_paid_fiat: '💵 Mark “Fiat Paid”',
-    p2p_confirm_received: '✅ Confirm Received',
-    p2p_open_dispute: '⚠️ Dispute',
-    p2p_release_escrow: '🔓 Release Escrow',
-    p2p_trade_card: (t)=>`🔐 *Trade #${t.id}* — Offer #${t.offerId}
-• ${t.side === 'BUY' ? 'Buyer' : 'Seller'}: \`${t.buyerId}\` / \`${t.sellerId}\`
-• Asset: ${t.coin} (${t.network})
-• Amount: ${t.amountCoin} ${t.coin}
-• Fiat: ${t.fiat} at ${t.pricePerCoin} ${t.fiat}/${t.coin}
-• Status: *${t.status}*
-${t.depositAddress ? `• Escrow Address: \`${t.depositAddress}\`` : '' }
-${t.dispute ? `• Dispute: ${t.dispute}` : '' }`,
-    p2p_trade_next: '➡️ Next',
-    p2p_trade_prev: '⬅️ Prev',
-    p2p_need_amount: 'Enter amount of coin you want to trade (e.g., 0.5):',
-    p2p_bad_amount: '❌ Invalid amount.',
-    p2p_out_of_limits: (min,max,fiat)=>`❌ Trade outside limits. Allowed: ${min}-${max} ${fiat}.`,
-    p2p_generating_addr: '🔐 Generating escrow deposit address…',
-    p2p_addr_ready: (addr,amt,coin)=>`✅ Escrow address ready.\nSend *${amt} ${coin}* to:\n\`${addr}\`\n\nWhen the *fiat is paid*, press “💵 Mark Fiat Paid”.`,
-    p2p_mark_paid_note: 'Got it. Waiting for counterparty to confirm receipt.',
-    p2p_confirm_note: 'Thanks. Admin will release escrow after checks.',
-    p2p_dispute_note: 'Dispute opened. Admin will review.',
-    p2p_canceled: 'Trade canceled.',
-    p2p_admin_trade_tools: '🛠 *Admin — Trade Tools*',
-    p2p_admin_mark_escrow_rcv: '✅ Mark Escrow Received',
-    p2p_admin_release: '🔓 Release to Seller',
-    p2p_admin_cancel: '🛑 Cancel Trade',
-    p2p_admin_note: 'Use these once you verify on CoinPayments dashboard.',
-    p2p_left_star: (n)=>`⭐ Thanks! You rated ${n} star(s).`,
   },
   de:{}, zh:{}, es:{}, ru:{}, hi:{},
 };
 
-// minimal label overrides
+// minimal label overrides (kept short)
 Object.assign(I18N.de, { btn_start_selling:'✅ Verkauf starten', btn_help:'📖 Anleitung', btn_find:'🔍 Bestellung finden', btn_language:'🌐 Sprache', language_set:(l)=>`✅ Sprache: *${l}*.` });
 Object.assign(I18N.zh, { btn_start_selling:'✅ 开始出售', btn_help:'📖 指南', btn_find:'🔍 查找订单', btn_language:'🌐 语言', language_set:(l)=>`✅ 语言: *${l}*。` });
 Object.assign(I18N.es, { btn_start_selling:'✅ Empezar a vender', btn_help:'📖 Guía', btn_find:'🔍 Buscar pedido', btn_language:'🌐 Idioma', language_set:(l)=>`✅ Idioma: *${l}*.` });
@@ -311,15 +237,6 @@ async function calculateFiatLive(coin, amt, fiat) {
   return px ? amt * px : 0;
 }
 
-async function pricePerCoin(coin, fiat, pricing) {
-  // pricing: {type:'fixed'| 'margin', value: number} or {type:'margin', margin: +/-%}
-  if (pricing.type === 'fixed') return pricing.value;
-  const rates = await fetchLiveRates();
-  const base = rates[fiat]?.[coin] || 0;
-  const margin = pricing.margin || 0;
-  return +(base * (1 + margin/100)).toFixed(2);
-}
-
 /**
  * ──────────────────────────────────────────────────────────────────────────────
  *  UTILITIES
@@ -365,23 +282,9 @@ function notifyAdminNewUser(userId, userInfo, referredBy = null) {
 }
 function isAdmin(chatId) { return chatId.toString() === ADMIN_CHAT_ID.toString(); }
 
-// Reputation helpers
-function getRepBadge(userId) {
-  const r = reputation[userId];
-  if (!r) return '(new)';
-  const stars = '⭐'.repeat(Math.round(r.stars || 0)) || '⭐';
-  return `${stars} (${r.completed || 0})`;
-}
-function updateRep(afterTradeUserId, stars) {
-  const r = reputation[afterTradeUserId] || {stars:0, completed:0};
-  const total = (r.stars * r.completed) + stars;
-  const completed = r.completed + 1;
-  reputation[afterTradeUserId] = { stars: +(total/completed).toFixed(2), completed };
-}
-
 /**
  * ──────────────────────────────────────────────────────────────────────────────
- *  SIMPLE MENUS (your original)
+ *  SIMPLE MENUS
  * ──────────────────────────────────────────────────────────────────────────────
  */
 async function renderMainMenu(chatId) {
@@ -393,7 +296,6 @@ async function renderMainMenu(chatId) {
     reply_markup: {
       inline_keyboard: [
         [{ text: t(chatId,'btn_start_selling'), callback_data: 'start_sell' }],
-        [{ text: '🧑‍🤝‍🧑 P2P Market', callback_data: 'p2p_menu' }],
         [{ text: t(chatId,'btn_help'), callback_data: 'show_help' }, { text: t(chatId,'btn_about'), callback_data: 'show_about' }],
         [{ text: t(chatId,'btn_find'), callback_data: 'find_transaction' }, { text: t(chatId,'btn_language'), callback_data: 'language' }],
         [{ text: t(chatId,'btn_support'), callback_data: 'support_open' }],
@@ -402,205 +304,123 @@ async function renderMainMenu(chatId) {
     }
   });
 }
+async function renderAbout(chatId) {
+  await bot.sendMessage(chatId, t(chatId,'about_text'), {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: [[{ text: t(chatId,'back_menu'), callback_data: 'menu' }]] }
+  });
+}
+async function renderHelp(chatId) {
+  const body = I18N[ULang(chatId)].guide_body?.(MIN_USD_EQ, MAX_USD_EQ) || I18N.en.guide_body(MIN_USD_EQ, MAX_USD_EQ);
+  await bot.sendMessage(chatId, `*${t(chatId,'guide_title')}*\n\n${body}`, {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: [[{ text: t(chatId,'back_menu'), callback_data: 'menu' }]] }
+  });
+}
+async function renderFindTransactionPrompt(chatId) {
+  userStates[chatId] = { ...(userStates[chatId] || {}), awaiting: 'order_number_search' };
+  await bot.sendMessage(chatId, t(chatId,'find_prompt'), {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: [[{ text: t(chatId,'back_menu'), callback_data: 'menu' }]] }
+  });
+}
+async function renderSupportPrompt(chatId) {
+  if (userStates[chatId]?.awaiting && userStates[chatId].awaiting !== 'support_message') {
+    return bot.sendMessage(chatId, "⚠️ Finish your current step or send /start.", {
+      reply_markup: { inline_keyboard: [[{ text: t(chatId,'back_menu'), callback_data: 'menu' }]] }
+    });
+  }
+  userStates[chatId] = { ...(userStates[chatId] || {}), awaiting: 'support_message' };
+  await bot.sendMessage(chatId, t(chatId,'support_prompt'), {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: [[{ text: t(chatId,'back_menu'), callback_data: 'menu' }]] }
+  });
+}
+async function renderLanguageMenu(chatId) {
+  const rows = [
+    LANGS.slice(0,3).map(l=>({ text:l.label, callback_data:`lang_${l.code}` })),
+    LANGS.slice(3).map(l=>({ text:l.label, callback_data:`lang_${l.code}` })),
+  ];
+  await bot.sendMessage(chatId, `${t(chatId,'translator_title')}\n\n${t(chatId,'choose_language')}`, {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: [...rows, [{ text: t(chatId,'back_menu'), callback_data: 'menu' }]] }
+  });
+}
 
 /**
  * ──────────────────────────────────────────────────────────────────────────────
- *  ADMIN (your original)
+ *  ADMIN (simple)
  * ──────────────────────────────────────────────────────────────────────────────
  */
-// ... (unchanged admin flows from your original; kept below in callbacks)
+async function renderAdminMenu(chatId) {
+  if (!isAdmin(chatId)) {
+    return bot.sendMessage(chatId, t(chatId,'admin_only'), { parse_mode: 'Markdown' });
+  }
+  const totalUsers = Object.keys(referralData).length;
+  const totalTx = Object.keys(transactionRecords).length;
+  const pending = Object.values(transactionRecords).filter(t => t.status === 'pending').length;
 
-/**
- * ──────────────────────────────────────────────────────────────────────────────
- *  P2P MARKET — Core
- * ──────────────────────────────────────────────────────────────────────────────
- */
-
-function newOfferId(){ return offerSeq++; }
-function newTradeId(){ return tradeSeq++; }
-
-function buildOffer(ownerId, payload) {
-  const id = newOfferId();
-  const offer = {
-    id,
-    ownerId,
-    side: payload.side, // 'BUY' (buys crypto, pays fiat) or 'SELL' (sells crypto, receives fiat)
-    coin: payload.coin,
-    network: payload.network,
-    fiat: payload.fiat,
-    pricing: payload.pricing, // {type:'fixed', value} or {type:'margin', margin}
-    minUsd: payload.minUsd,
-    maxUsd: payload.maxUsd,
-    methods: payload.methods,
-    terms: payload.terms || '',
-    active: true,
-    createdAt: Date.now()
-  };
-  p2pOffers[id] = offer;
-  return offer;
-}
-
-function listOffers(filter = {}) {
-  return Object.values(p2pOffers).filter(o=>{
-    if (!o.active) return false;
-    if (filter.side && o.side !== filter.side) return false;
-    if (filter.coin && o.coin !== filter.coin) return false;
-    if (filter.fiat && o.fiat !== filter.fiat) return false;
-    return true;
-  }).sort((a,b)=>b.createdAt - a.createdAt);
-}
-
-function offerCardText(chatId, o) {
-  const rep = getRepBadge(o.ownerId);
-  return t(chatId, 'p2p_offer_card', o, rep);
-}
-
-async function renderP2PMenu(chatId) {
-  await bot.sendMessage(chatId, `${t(chatId,'p2p_title')}\n\n${t(chatId,'p2p_menu_hint')}`, {
+  await bot.sendMessage(chatId, t(chatId,'admin_dash', totalUsers, totalTx, pending), {
     parse_mode: 'Markdown',
     reply_markup: { inline_keyboard: [
-      [{ text: t(chatId,'p2p_browse'), callback_data: 'p2p_browse' }],
-      [{ text: t(chatId,'p2p_create'), callback_data: 'p2p_create' }],
-      [{ text: t(chatId,'p2p_mine'), callback_data: 'p2p_mine' }],
-      [{ text: t(chatId,'p2p_trades'), callback_data: 'p2p_trades' }],
-      [{ text: t(chatId,'p2p_back'), callback_data: 'menu' }],
+      [{ text: t(chatId,'admin_recent_btn'), callback_data: 'admin_recent' }],
+      [{ text: t(chatId,'admin_find_btn'), callback_data: 'admin_find' }],
+      [{ text: t(chatId,'admin_back'), callback_data: 'menu' }],
     ] }
   });
 }
-
-async function renderOffersList(chatId, filter = {}) {
-  const list = listOffers(filter);
-  if (list.length === 0) {
-    return bot.sendMessage(chatId, t(chatId,'p2p_no_offers'), { parse_mode: 'Markdown' });
-  }
-  for (const o of list.slice(0, 10)) {
-    await bot.sendMessage(chatId, offerCardText(chatId,o), {
-      parse_mode: 'Markdown',
-      reply_markup: { inline_keyboard: [
-        [{ text: t(chatId,'p2p_view_offer'), callback_data: `offer_view:${o.id}` },
-         { text: t(chatId,'p2p_start_trade'), callback_data: `offer_start:${o.id}` }],
-        ...(o.ownerId === chatId ? [[
-          { text: t(chatId,'p2p_archive'), callback_data: `offer_archive:${o.id}` },
-          { text: t(chatId,'p2p_relist'), callback_data: `offer_relist:${o.id}` },
-        ]] : [])
-      ] }
-    });
-  }
+function getRecentTransactions(limit = 5) {
+  const list = Object.values(transactionRecords)
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+    .slice(0, limit);
+  if (list.length === 0) return "_No transactions yet._";
+  return list.map(t => `#${t.orderNumber} • ${t.coin}/${t.network} • ${t.amount} • ${t.fiat} • *${t.status}*\nID: \`${t.coinpaymentsTxnId}\` • ${new Date(t.timestamp).toLocaleString()}`).join('\n\n');
 }
-
-async function renderMyOffers(chatId) {
-  const mine = Object.values(p2pOffers).filter(o=>o.ownerId===chatId);
-  if (mine.length === 0) return bot.sendMessage(chatId, t(chatId,'p2p_no_mine'), { parse_mode: 'Markdown' });
-  for (const o of mine) {
-    await bot.sendMessage(chatId, offerCardText(chatId,o), {
-      parse_mode: 'Markdown',
-      reply_markup: { inline_keyboard: [
-        [{ text: t(chatId,'p2p_view_offer'), callback_data: `offer_view:${o.id}` }],
-        [{ text: o.active ? t(chatId,'p2p_archive') : t(chatId,'p2p_relist'), callback_data: o.active?`offer_archive:${o.id}`:`offer_relist:${o.id}` }],
-      ] }
-    });
-  }
-}
-
-function buildTradeFromOffer(offer, starterUserId, amountCoin, pricePer, fiatTotal) {
-  const id = newTradeId();
-  const side = (offer.side === 'BUY')
-    ? 'SELLER_IS_STARTER' // starter is selling coin, buyer is offer owner
-    : 'BUYER_IS_STARTER'; // starter is buying coin, seller is offer owner
-
-  const trade = {
-    id,
-    offerId: offer.id,
-    side: (offer.side === 'BUY') ? 'SELL' : 'BUY', // perspective of starter
-    buyerId: (offer.side === 'BUY') ? offer.ownerId : starterUserId,
-    sellerId: (offer.side === 'BUY') ? starterUserId : offer.ownerId,
-    coin: offer.coin,
-    network: offer.network,
-    fiat: offer.fiat,
-    pricePerCoin: pricePer,
-    amountCoin,
-    fiatTotal,
-    methods: offer.methods,
-    terms: offer.terms,
-    depositAddress: null,
-    coinpaymentsTxnId: null,
-    status: 'await_deposit', // await deposit to escrow address
-    createdAt: Date.now(),
-    dispute: null,
-  };
-  p2pTrades[id] = trade;
-  return trade;
-}
-
-function tradeCardText(chatId, tr) {
-  return t(chatId,'p2p_trade_card', tr);
-}
-
-async function renderTrade(chatId, tradeId, asAdmin=false) {
-  const tr = p2pTrades[tradeId];
-  if (!tr) return;
-  const buttons = [];
-
-  // User buttons
-  if (!asAdmin) {
-    if (tr.status === 'await_deposit' && chatId === tr.buyerId) {
-      // buyer waits to receive escrow? (In our P2P, starter sends coin to escrow)
-    }
-    if (tr.status === 'await_deposit' && chatId === tr.sellerId) {
-      // seller is the one who will receive after fiat confirmation
-    }
-    if (tr.depositAddress) {
-      if (chatId === tr.buyerId) buttons.push([{ text: t(chatId,'p2p_paid_fiat'), callback_data: `trade_paid:${tr.id}` }]);
-      if (chatId === tr.sellerId) buttons.push([{ text: t(chatId,'p2p_confirm_received'), callback_data: `trade_confirm:${tr.id}` }]);
-    }
-    buttons.push([{ text: t(chatId,'p2p_open_dispute'), callback_data: `trade_dispute:${tr.id}` },
-                  { text: t(chatId,'p2p_cancel_trade'), callback_data: `trade_cancel:${tr.id}` }]);
-  }
-
-  // Admin tools
-  if (asAdmin) {
-    buttons.push([{ text: t(chatId,'p2p_admin_mark_escrow_rcv'), callback_data: `admin_trade_escrow:${tr.id}` }]);
-    buttons.push([{ text: t(chatId,'p2p_admin_release'), callback_data: `admin_trade_release:${tr.id}` },
-                  { text: t(chatId,'p2p_admin_cancel'), callback_data: `admin_trade_cancel:${tr.id}` }]);
-  }
-
-  await bot.sendMessage(chatId, tradeCardText(chatId,tr), {
+async function renderAdminRecent(chatId) {
+  await bot.sendMessage(chatId, `${t(chatId,'admin_recent_title')}\n\n${getRecentTransactions(5)}`, {
     parse_mode: 'Markdown',
-    reply_markup: { inline_keyboard: buttons }
+    reply_markup: { inline_keyboard: [[{ text: t(chatId,'admin_back'), callback_data: 'admin_menu' }]] }
   });
 }
-
-async function createEscrowAddressForTrade(chatId, tr) {
-  // For escrow, we generate a CoinPayments transaction address with exact amount
-  try {
-    await bot.sendMessage(chatId, t(chatId,'p2p_generating_addr'), { parse_mode: 'Markdown' });
-
-    let currency2;
-    if (tr.coin === 'USDT') currency2 = COIN_NETWORK_MAP.USDT[tr.network];
-    else if (tr.coin === 'BTC') currency2 = COIN_NETWORK_MAP.BTC.MAIN;
-    else if (tr.coin === 'ETH') currency2 = COIN_NETWORK_MAP.ETH.MAIN;
-
-    const res = await coinpayments.createTransaction({
-      currency1: tr.coin,
-      currency2,
-      amount: tr.amountCoin,
-      buyer_email: BUYER_REFUND_EMAIL,
-      custom: `P2P Trade #${tr.id} | Offer #${tr.offerId} | ${tr.coin}/${tr.network}`,
-      item_name: `P2P Escrow for Trade #${tr.id}`,
-      ipn_url: `${BOT_PUBLIC_URL}/coinpayments/ipn` // wire later if you want auto-detect
+async function renderAdminFindPrompt(chatId) {
+  userStates[chatId] = { ...(userStates[chatId] || {}), awaiting: 'admin_find_order' };
+  await bot.sendMessage(chatId, t(chatId,'admin_find_prompt'), {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: [[{ text: t(chatId,'admin_back'), callback_data: 'admin_menu' }]] }
+  });
+}
+async function renderAdminOrderDetail(chatId, orderNumber) {
+  const tnx = findTransactionByOrderNumber(orderNumber);
+  if (!tnx) {
+    return bot.sendMessage(chatId, `❌ Order *${orderNumber}* not found.`, {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [[{ text: t(chatId,'admin_find_btn'), callback_data: 'admin_find' }],[{ text: t(chatId,'admin_back'), callback_data: 'admin_menu' }]] }
     });
-
-    tr.coinpaymentsTxnId = res.txn_id;
-    tr.depositAddress   = res.address;
-
-    await bot.sendMessage(tr.buyerId, t(chatId,'p2p_addr_ready', tr.depositAddress, tr.amountCoin, tr.coin), { parse_mode: 'Markdown' });
-    if (tr.sellerId !== tr.buyerId) {
-      await bot.sendMessage(tr.sellerId, `🔐 Trade #${tr.id}: Escrow address created.\nBuyer will deposit *${tr.amountCoin} ${tr.coin}* to escrow.`, { parse_mode: 'Markdown' });
-    }
-  } catch (e) {
-    console.error('Escrow address error:', e);
-    await bot.sendMessage(chatId, '❌ Failed to create escrow address. Try later.');
   }
+  await bot.sendMessage(chatId, t(chatId,'admin_order_card', tnx), {
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: t(chatId,'admin_mark_paid'), callback_data: `admin_mark_paid:${tnx.orderNumber}` },
+         { text: t(chatId,'admin_mark_completed'), callback_data: `admin_mark_completed:${tnx.orderNumber}` }],
+        [{ text: t(chatId,'admin_mark_canceled'), callback_data: `admin_mark_canceled:${tnx.orderNumber}` }],
+        [{ text: t(chatId,'admin_back'), callback_data: 'admin_menu' }]
+      ]
+    }
+  });
+}
+function updateOrderStatus(orderNumber, status) {
+  const tnx = transactionRecords[orderNumber];
+  if (!tnx) return false;
+  tnx.status = status;
+  return true;
+}
+async function notifyUserOrderUpdated(orderNumber) {
+  const tnx = transactionRecords[orderNumber];
+  if (!tnx) return;
+  try {
+    await bot.sendMessage(tnx.userId, `🔔 *Order Update*\n\n*Order:* #${tnx.orderNumber}\n*Status:* ${tnx.status}`, { parse_mode: 'Markdown' });
+  } catch {}
 }
 
 /**
@@ -640,13 +460,35 @@ bot.onText(/\/support/, async (msg) => renderSupportPrompt(msg.chat.id));
 bot.onText(/\/admin/, async (msg) => renderAdminMenu(msg.chat.id));
 bot.onText(/\/language/, async (msg) => renderLanguageMenu(msg.chat.id));
 
-// P2P shortcuts
-bot.onText(/\/p2p/, async (msg)=> renderP2PMenu(msg.chat.id));
-bot.onText(/\/offers/, async (msg)=> renderOffersList(msg.chat.id, {}));
-bot.onText(/\/trades/, async (msg)=> {
-  const mine = Object.values(p2pTrades).filter(tr=> tr.buyerId===msg.chat.id || tr.sellerId===msg.chat.id);
-  if (mine.length === 0) return bot.sendMessage(msg.chat.id, t(msg.chat.id,'p2p_no_trades'), { parse_mode: 'Markdown' });
-  for (const tr of mine.sort((a,b)=>b.createdAt-a.createdAt).slice(0,10)) await renderTrade(msg.chat.id, tr.id);
+bot.onText(/\/referral/, async (msg) => {
+  const chatId = msg.chat.id;
+  initializeReferralData(chatId);
+  const { balance, referredCount } = referralData[chatId];
+
+  let botUsername = 'Crypto_Seller_Bot';
+  try { botUsername = (await bot.getMe()).username; } catch {}
+  const referralLink = `https://t.me/${botUsername}?start=${chatId}`;
+
+  const isReadyToWithdraw = balance >= MIN_REFERRAL_WITHDRAWAL_USDT;
+  const missingAmount = MIN_REFERRAL_WITHDRAWAL_USDT - balance;
+
+  const message = `
+*🤝 Referral Program*
+
+• *Your ID:* \`${chatId}\`
+• *Your Link:* \`${referralLink}\`
+
+• *Balance:* *${balance.toFixed(2)} USDT*
+• *Successful Referrals:* *${referredCount}*
+• *Reward per Referral:* *${REFERRAL_REWARD_USDT.toFixed(1)} USDT*
+
+*Withdrawal Minimum:* ${MIN_REFERRAL_WITHDRAWAL_USDT} USDT
+${isReadyToWithdraw ? "🎉 You're ready to withdraw (contact support)." : `Keep going — you need *${missingAmount.toFixed(2)} USDT* more to withdraw.`}
+  `;
+  await bot.sendMessage(chatId, message, {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: [[{ text: t(chatId,'back_menu'), callback_data: 'menu' }]] }
+  });
 });
 
 /**
@@ -662,12 +504,12 @@ bot.on('callback_query', async (cq) => {
   initializeReferralData(chatId);
 
   try {
-    // General
     if (data === 'menu') return renderMainMenu(chatId);
     if (data === 'show_about') return renderAbout(chatId);
     if (data === 'show_help') return renderHelp(chatId);
     if (data === 'find_transaction') return renderFindTransactionPrompt(chatId);
     if (data === 'support_open') return renderSupportPrompt(chatId);
+
     if (data === 'language') return renderLanguageMenu(chatId);
     if (data.startsWith('lang_')) {
       const code = data.split('_')[1];
@@ -679,7 +521,7 @@ bot.on('callback_query', async (cq) => {
       }
     }
 
-    // Admin (original)
+    // Admin
     if (data === 'admin_menu') return renderAdminMenu(chatId);
     if (data === 'admin_recent') return renderAdminRecent(chatId);
     if (data === 'admin_find') return renderAdminFindPrompt(chatId);
@@ -697,7 +539,7 @@ bot.on('callback_query', async (cq) => {
       return renderAdminOrderDetail(chatId, orderNumber);
     }
 
-    // Selling flow (original)
+    // Selling flow
     if (data === 'start_sell' || data === 'refresh_rates') {
       let pricesLine = '';
       try {
@@ -842,160 +684,6 @@ bot.on('callback_query', async (cq) => {
       return bot.sendMessage(chatId, t(chatId,'start_over'), { parse_mode: 'Markdown' });
     }
 
-    /**
-     * ──────────────────────────────────────────────────────────────────────────
-     *  P2P CALLBACKS
-     * ──────────────────────────────────────────────────────────────────────────
-     */
-    if (data === 'p2p_menu') return renderP2PMenu(chatId);
-    if (data === 'p2p_browse') {
-      // Let user pick quick filters
-      userStates[chatId].awaiting = 'p2p_filter';
-      return bot.sendMessage(chatId, 'Filter offers (optional). Send like:\n`side:BUY coin:USDT fiat:USD`\nOr send `skip`.', { parse_mode: 'Markdown' });
-    }
-    if (data === 'p2p_create') {
-      // Start offer wizard
-      userStates[chatId].p2pOffer = { step: 1, draft: { methods: [] }};
-      return bot.sendMessage(chatId,
-        '➕ Creating offer.\n1) Send side: `BUY` (you buy crypto, pay fiat) or `SELL` (you sell crypto, receive fiat).',
-        { parse_mode: 'Markdown' });
-    }
-    if (data === 'p2p_mine') return renderMyOffers(chatId);
-    if (data === 'p2p_trades') {
-      const mine = Object.values(p2pTrades).filter(tr=> tr.buyerId===chatId || tr.sellerId===chatId);
-      if (mine.length === 0) return bot.sendMessage(chatId, t(chatId,'p2p_no_trades'), { parse_mode: 'Markdown' });
-      for (const tr of mine.sort((a,b)=>b.createdAt-a.createdAt).slice(0,10)) await renderTrade(chatId, tr.id);
-      return;
-    }
-
-    if (data.startsWith('offer_view:')) {
-      const id = +data.split(':')[1];
-      const o = p2pOffers[id];
-      if (!o) return;
-      return bot.sendMessage(chatId, offerCardText(chatId,o), { parse_mode: 'Markdown' });
-    }
-
-    if (data.startsWith('offer_start:')) {
-      const id = +data.split(':')[1];
-      const o = p2pOffers[id];
-      if (!o || !o.active) return;
-      // Collect amount of coin
-      userStates[chatId].awaiting = `p2p_amount:${id}`;
-      return bot.sendMessage(chatId, t(chatId,'p2p_need_amount'), { parse_mode: 'Markdown' });
-    }
-
-    if (data.startsWith('offer_archive:')) {
-      const id = +data.split(':')[1];
-      const o = p2pOffers[id];
-      if (!o || o.ownerId!==chatId) return;
-      o.active = false;
-      return bot.sendMessage(chatId, t(chatId,'p2p_offer_archived', id), { parse_mode: 'Markdown' });
-    }
-
-    if (data.startsWith('offer_relist:')) {
-      const id = +data.split(':')[1];
-      const o = p2pOffers[id];
-      if (!o || o.ownerId!==chatId) return;
-      o.active = true;
-      return bot.sendMessage(chatId, t(chatId,'p2p_offer_relisted', id), { parse_mode: 'Markdown' });
-    }
-
-    if (data.startsWith('trade_paid:')) {
-      const id = +data.split(':')[1];
-      const tr = p2pTrades[id];
-      if (!tr || chatId !== tr.buyerId) return;
-      tr.status = 'fiat_marked_paid';
-      await bot.sendMessage(chatId, t(chatId,'p2p_mark_paid_note'));
-      await bot.sendMessage(tr.sellerId, `💵 Trade #${tr.id}: Buyer marked *Fiat Paid*. Please verify and then press “${t(chatId,'p2p_confirm_received')}”.`);
-      await renderTrade(ADMIN_CHAT_ID, tr.id, true);
-      return;
-    }
-
-    if (data.startsWith('trade_confirm:')) {
-      const id = +data.split(':')[1];
-      const tr = p2pTrades[id];
-      if (!tr || chatId !== tr.sellerId) return;
-      tr.status = 'seller_confirmed';
-      await bot.sendMessage(chatId, t(chatId,'p2p_confirm_note'));
-      await bot.sendMessage(tr.buyerId, `✅ Trade #${tr.id}: Seller confirmed fiat receipt.\nWaiting for admin release.`);
-      // Notify admin to release
-      await renderTrade(ADMIN_CHAT_ID, tr.id, true);
-      return;
-    }
-
-    if (data.startsWith('trade_dispute:')) {
-      const id = +data.split(':')[1];
-      const tr = p2pTrades[id];
-      if (!tr) return;
-      tr.dispute = `Opened by ${chatId} at ${new Date().toLocaleString()}`;
-      tr.status = 'disputed';
-      await bot.sendMessage(chatId, t(chatId,'p2p_dispute_note'));
-      await renderTrade(ADMIN_CHAT_ID, tr.id, true);
-      return;
-    }
-
-    if (data.startsWith('trade_cancel:')) {
-      const id = +data.split(':')[1];
-      const tr = p2pTrades[id];
-      if (!tr) return;
-      tr.status = 'canceled';
-      await bot.sendMessage(chatId, t(chatId,'p2p_canceled'));
-      await bot.sendMessage(tr.buyerId, `🔔 Trade #${tr.id} canceled.`);
-      await bot.sendMessage(tr.sellerId, `🔔 Trade #${tr.id} canceled.`);
-      return;
-    }
-
-    // ADMIN P2P
-    if (data.startsWith('admin_trade_')) {
-      if (!isAdmin(chatId)) return;
-      const [act, idStr] = data.split(':'); // e.g., admin_trade_release:12
-      const id = +idStr;
-      const tr = p2pTrades[id];
-      if (!tr) return;
-
-      if (act === 'admin_trade_escrow') {
-        tr.status = 'escrow_received';
-        await bot.sendMessage(ADMIN_CHAT_ID, '✅ Marked escrow received.');
-        await renderTrade(ADMIN_CHAT_ID, tr.id, true);
-        return;
-      }
-      if (act === 'admin_trade_release') {
-        // Here you can call coinpayments.createWithdrawal(...) to send coin to seller wallet
-        // For demo, we just mark released.
-        tr.status = 'released';
-        await bot.sendMessage(tr.sellerId, `🎉 Trade #${tr.id}: Escrow released.`, { parse_mode: 'Markdown' });
-        await bot.sendMessage(tr.buyerId,  `🎉 Trade #${tr.id}: Completed.`);
-
-        // Simple 1–5 rating prompt (inline stars)
-        await bot.sendMessage(tr.buyerId, 'Please rate the counterparty (1-5):\n⭐️⭐️⭐️⭐️⭐️', {
-          reply_markup: { inline_keyboard: [[
-            { text:'1', callback_data:`rate:${tr.sellerId}:1` },
-            { text:'2', callback_data:`rate:${tr.sellerId}:2` },
-            { text:'3', callback_data:`rate:${tr.sellerId}:3` },
-            { text:'4', callback_data:`rate:${tr.sellerId}:4` },
-            { text:'5', callback_data:`rate:${tr.sellerId}:5` },
-          ]] }
-        });
-
-        await renderTrade(ADMIN_CHAT_ID, tr.id, true);
-        return;
-      }
-      if (act === 'admin_trade_cancel') {
-        tr.status = 'canceled';
-        await bot.sendMessage(tr.buyerId, '❌ Trade canceled by admin.');
-        await bot.sendMessage(tr.sellerId, '❌ Trade canceled by admin.');
-        await renderTrade(ADMIN_CHAT_ID, tr.id, true);
-        return;
-      }
-    }
-
-    if (data.startsWith('rate:')) {
-      const [, uid, starsStr] = data.split(':');
-      const stars = Math.max(1, Math.min(5, parseInt(starsStr,10) || 5));
-      updateRep(uid, stars);
-      await bot.sendMessage(chatId, t(chatId,'p2p_left_star', stars));
-    }
-
   } finally {
     bot.answerCallbackQuery(cq.id).catch(()=>{});
   }
@@ -1003,7 +691,7 @@ bot.on('callback_query', async (cq) => {
 
 /**
  * ──────────────────────────────────────────────────────────────────────────────
- *  COINPAYMENTS ADDRESS (original off-ramp)
+ *  COINPAYMENTS ADDRESS
  * ──────────────────────────────────────────────────────────────────────────────
  */
 async function generateDepositAddress(chatId) {
@@ -1028,7 +716,7 @@ async function generateDepositAddress(chatId) {
       buyer_email: BUYER_REFUND_EMAIL,
       custom: `Order: ${orderNumber} | ${coin}/${net} | Payout to ${paymentMethodForCustom}: ${state.paymentDetails}`,
       item_name: `Sell ${state.amount} ${coin} for ${state.fiat}`,
-      ipn_url: `${BOT_PUBLIC_URL}/coinpayments/ipn`
+      ipn_url: 'YOUR_IPN_WEBHOOK_URL'
     };
 
     const result = await coinpayments.createTransaction(transactionOptions);
@@ -1075,7 +763,7 @@ async function generateDepositAddress(chatId) {
  */
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
-  const text = (msg.text || '').trim();
+  const text = msg.text || '';
   const st = userStates[chatId] || {};
   initializeReferralData(chatId);
 
@@ -1095,10 +783,10 @@ bot.on('message', async (msg) => {
     return;
   }
 
-  // Ignore slash-commands
+  // Ignore slash-commands (handled elsewhere)
   if (text.startsWith('/')) return;
 
-  // Support (original)
+  // Support
   if (st.awaiting === 'support_message') {
     const supportText = text;
     const userInfo = `User ID: ${msg.from.id}, Name: ${msg.from.first_name || ''} ${msg.from.last_name || ''}, Username: @${msg.from.username || 'N/A'}`;
@@ -1114,16 +802,16 @@ bot.on('message', async (msg) => {
     return;
   }
 
-  // Admin — find order (original)
+  // Admin — find order (text)
   if (st.awaiting === 'admin_find_order' && isAdmin(chatId)) {
     userStates[chatId].awaiting = null;
-    const orderNumber = text.toUpperCase();
+    const orderNumber = text.trim().toUpperCase();
     return renderAdminOrderDetail(chatId, orderNumber);
   }
 
-  // User — find order (original)
+  // User — find order
   if (st.awaiting === 'order_number_search') {
-    const ord = text.toUpperCase();
+    const ord = text.trim().toUpperCase();
     const tnx = findTransactionByOrderNumber(ord);
     if (tnx) {
       const info = `
@@ -1151,7 +839,7 @@ ${t(chatId,'tx_found_title')}
     return;
   }
 
-  // User — amount entry (original)
+  // User — amount entry
   if (st.awaiting === 'amount') {
     const amount = parseFloat(text);
     if (isNaN(amount) || amount <= 0) {
@@ -1193,7 +881,7 @@ ${t(chatId,'tx_found_title')}
     return;
   }
 
-  // Collect payout details (original)
+  // Collect payout details
   if ([
     'wise_details','revolut_details','paypal_details','card_details',
     'payeer_details','alipay_details','skrill_neteller_details',
@@ -1202,7 +890,7 @@ ${t(chatId,'tx_found_title')}
     userStates[chatId].paymentDetails = text;
     userStates[chatId].awaiting = null;
 
-    const previewOrder = generateOrderNumber();
+    const previewOrder = generateOrderNumber(); // preview only; actual generated on address creation
     const fiatToReceive = await calculateFiatLive(userStates[chatId].coin || 'USDT', userStates[chatId].amount, userStates[chatId].fiat);
 
     await bot.sendMessage(chatId, `${t(chatId,'review_summary_title')}
@@ -1225,130 +913,6 @@ ${t(chatId,'tx_found_title')}
     });
     return;
   }
-
-  /**
-   * ────────────────────────────────────────────────────────────────────────────
-   *  P2P — Wizard inputs & amount capture
-   * ────────────────────────────────────────────────────────────────────────────
-   */
-  // Browse filter text
-  if (st.awaiting === 'p2p_filter') {
-    userStates[chatId].awaiting = null;
-    const filter = {};
-    if (text.toLowerCase() !== 'skip') {
-      const parts = text.split(/\s+/);
-      for (const p of parts) {
-        const [k,v] = p.split(':');
-        if (!k || !v) continue;
-        if (k==='side' && (v==='BUY'||v==='SELL')) filter.side = v;
-        if (k==='coin' && SUPPORTED_COINS.includes(v)) filter.coin = v;
-        if (k==='fiat' && SUPPORTED_FIAT.includes(v)) filter.fiat = v;
-      }
-    }
-    return renderOffersList(chatId, filter);
-  }
-
-  // Create offer wizard
-  if (st.p2pOffer) {
-    const s = st.p2pOffer;
-    if (s.step === 1) {
-      const side = text.toUpperCase();
-      if (!['BUY','SELL'].includes(side)) return bot.sendMessage(chatId, 'Send `BUY` or `SELL`.', { parse_mode: 'Markdown' });
-      s.draft.side = side; s.step = 2;
-      return bot.sendMessage(chatId, '2) Coin? `USDT` | `BTC` | `ETH`', { parse_mode: 'Markdown' });
-    }
-    if (s.step === 2) {
-      const coin = text.toUpperCase();
-      if (!SUPPORTED_COINS.includes(coin)) return bot.sendMessage(chatId, 'Pick one of: `USDT`, `BTC`, `ETH`.', { parse_mode: 'Markdown' });
-      s.draft.coin = coin; s.step = 3;
-      return bot.sendMessage(chatId, coin==='USDT' ? '3) Network? `TRC20` or `ERC20`' : '3) Network? `MAIN`', { parse_mode: 'Markdown' });
-    }
-    if (s.step === 3) {
-      const net = text.toUpperCase();
-      if (s.draft.coin==='USDT' && !['TRC20','ERC20'].includes(net)) return bot.sendMessage(chatId, 'Send `TRC20` or `ERC20`.', { parse_mode: 'Markdown' });
-      if (s.draft.coin!=='USDT' && net!=='MAIN') return bot.sendMessage(chatId, 'Send `MAIN`.', { parse_mode: 'Markdown' });
-      s.draft.network = net; s.step = 4;
-      return bot.sendMessage(chatId, '4) Fiat? `USD` | `EUR` | `GBP`', { parse_mode: 'Markdown' });
-    }
-    if (s.step === 4) {
-      const fiat = text.toUpperCase();
-      if (!SUPPORTED_FIAT.includes(fiat)) return bot.sendMessage(chatId, 'Pick `USD`, `EUR`, or `GBP`.', { parse_mode: 'Markdown' });
-      s.draft.fiat = fiat; s.step = 5;
-      return bot.sendMessage(chatId, '5) Pricing: send either:\n• `fixed: <pricePerCoin>`\n• `margin: <percent>` (e.g., `margin: +1.5`)', { parse_mode: 'Markdown' });
-    }
-    if (s.step === 5) {
-      const m = text.toLowerCase();
-      if (m.startsWith('fixed:')) {
-        const val = parseFloat(m.split(':')[1]);
-        if (!val || val<=0) return bot.sendMessage(chatId, 'Invalid fixed price.');
-        s.draft.pricing = {type:'fixed', value: +val.toFixed(2)}; s.step = 6;
-      } else if (m.startsWith('margin:')) {
-        const val = parseFloat(m.split(':')[1]);
-        if (isNaN(val)) return bot.sendMessage(chatId, 'Invalid margin (e.g., +1.5 or -0.8).');
-        s.draft.pricing = {type:'margin', margin: +val}; s.step = 6;
-      } else {
-        return bot.sendMessage(chatId, 'Send `fixed: <num>` or `margin: <num>`.');
-      }
-      return bot.sendMessage(chatId, '6) Limits: send `min max` in fiat (e.g., `100 1000`).');
-    }
-    if (s.step === 6) {
-      const [min,max] = text.split(/\s+/).map(Number);
-      if (!min || !max || min<=0 || max<=0 || min>max) return bot.sendMessage(chatId, 'Invalid limits.');
-      s.draft.minUsd = min; s.draft.maxUsd = max; s.step = 7;
-      return bot.sendMessage(chatId, `7) Methods (comma separated). Options: ${P2P_PAYMENT_METHODS.join(', ')}`);
-    }
-    if (s.step === 7) {
-      const methods = text.split(',').map(v=>v.trim()).filter(v=>P2P_PAYMENT_METHODS.includes(v));
-      if (methods.length===0) return bot.sendMessage(chatId, 'Pick at least one valid method.');
-      s.draft.methods = methods; s.step = 8;
-      return bot.sendMessage(chatId, '8) Terms/notes (optional). Send text or `skip`.');
-    }
-    if (s.step === 8) {
-      s.draft.terms = (text.toLowerCase()==='skip') ? '' : text;
-      const offer = buildOffer(chatId, s.draft);
-      delete st.p2pOffer;
-      return bot.sendMessage(chatId, t(chatId,'p2p_offer_created', offer.id), { parse_mode:'Markdown' });
-    }
-  }
-
-  // Amount for a chosen offer
-  if (st.awaiting && st.awaiting.startsWith('p2p_amount:')) {
-    const offerId = +st.awaiting.split(':')[1];
-    const o = p2pOffers[offerId];
-    userStates[chatId].awaiting = null;
-    if (!o || !o.active) return bot.sendMessage(chatId, 'Offer no longer available.');
-
-    const amt = parseFloat(text);
-    if (!amt || amt<=0) return bot.sendMessage(chatId, t(chatId,'p2p_bad_amount'));
-
-    // compute fiat total
-    const price = await pricePerCoin(o.coin, o.fiat, o.pricing);
-    const fiatTotal = +(price * amt).toFixed(2);
-    if (fiatTotal < o.minUsd || fiatTotal > o.maxUsd) {
-      return bot.sendMessage(chatId, t(chatId,'p2p_out_of_limits', o.minUsd, o.maxUsd, o.fiat));
-    }
-
-    const tr = buildTradeFromOffer(o, chatId, amt, price, fiatTotal);
-    // Create escrow address for buyer (the coin-sender — the starter when offer side = BUY)
-    await createEscrowAddressForTrade(chatId, tr);
-    await renderTrade(chatId, tr.id);
-    if (tr.sellerId !== chatId) await renderTrade(tr.sellerId, tr.id);
-    return;
-  }
 });
 
-/**
- * ──────────────────────────────────────────────────────────────────────────────
- *  (Optional) Express webhook to auto-handle CoinPayments IPN
- * ──────────────────────────────────────────────────────────────────────────────
- * Plug this into an Express server if/when you’re ready. Validate HMAC with IPN_SECRET.
- *
- * app.post('/coinpayments/ipn', bodyParser.urlencoded({extended:false}), (req,res)=>{
- *   const { txn_id, status, custom } = req.body;
- *   // find trade by txn_id or parse `custom` (Trade #)
- *   // if status >= 100 mark escrow_received
- *   res.end('OK');
- * });
- */
-
-console.log("P2P-enabled bot is running…");
+console.log("Simple bot is running…");
