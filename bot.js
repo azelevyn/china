@@ -169,6 +169,7 @@ Choose an option:`,
 *User:* \`${t.userId}\`
 *Coin:* ${t.coin} (${t.network}) • *Amount:* ${t.amount}
 *Payout:* ${t.fiat} via ${t.paymentMethod}
+*Beneficiary:* ${t.payoutFirstName || ''} ${t.payoutLastName || ''}
 *Details:* \`${t.paymentDetails}\`
 *Txn ID:* ${t.coinpaymentsTxnId}
 *Deposit:* \`${t.depositAddress}\`
@@ -176,6 +177,10 @@ Choose an option:`,
     admin_mark_paid: '✅ Mark Paid',
     admin_mark_completed: '🎉 Mark Completed',
     admin_mark_canceled: '🛑 Cancel',
+
+    // NEW (names)
+    payout_name_first_prompt: '✅ Beneficiary details\n\nPlease enter the *First Name* (as it appears on the payout account):',
+    payout_name_last_prompt: 'Great — now enter the *Last Name*:',
   },
   de:{}, zh:{}, es:{}, ru:{}, hi:{},
 };
@@ -621,40 +626,16 @@ bot.on('callback_query', async (cq) => {
       });
     }
 
+    // UPDATED: on payout method click, first collect beneficiary names
     if (data.startsWith('pay_')) {
-      const method = data.split('_')[1];
-      let prompt = '';
-      if (method !== 'bank' && method !== 'skrill') userStates[chatId].paymentMethod = method;
-      switch (method) {
-        case 'wise':    prompt = t(chatId,'wise_prompt');    userStates[chatId].awaiting = 'wise_details'; break;
-        case 'revolut': prompt = t(chatId,'revolut_prompt'); userStates[chatId].awaiting = 'revolut_details'; break;
-        case 'paypal':  prompt = t(chatId,'paypal_prompt');  userStates[chatId].awaiting = 'paypal_details'; break;
-        case 'bank':
-          return bot.sendMessage(chatId, t(chatId,'bank_region'), {
-            parse_mode: 'Markdown',
-            reply_markup: { inline_keyboard: [
-              [{ text: t(chatId,'pick_region_eu'), callback_data: 'bank_eu' }],
-              [{ text: t(chatId,'pick_region_us'), callback_data: 'bank_us' }],
-              [{ text: t(chatId,'back_menu'), callback_data: 'menu' }],
-            ] }
-          });
-        case 'skrill':
-          return bot.sendMessage(chatId, t(chatId,'skrill_or_neteller'), {
-            parse_mode: 'Markdown',
-            reply_markup: { inline_keyboard: [
-              [{ text: t(chatId,'pick_skrill'), callback_data: 'payout_skrill' }],
-              [{ text: t(chatId,'pick_neteller'), callback_data: 'payout_neteller' }],
-              [{ text: t(chatId,'back_menu'), callback_data: 'menu' }],
-            ] }
-          });
-        case 'card':    prompt = t(chatId,'card_prompt');    userStates[chatId].awaiting = 'card_details'; break;
-        case 'payeer':  prompt = t(chatId,'payeer_prompt');  userStates[chatId].awaiting = 'payeer_details'; break;
-        case 'alipay':  prompt = t(chatId,'alipay_prompt');  userStates[chatId].awaiting = 'alipay_details'; break;
-      }
-      if (prompt) return bot.sendMessage(chatId, prompt, { parse_mode: 'Markdown' });
+      const method = data.split('_')[1]; // wise | revolut | paypal | bank | skrill | card | payeer | alipay
+      userStates[chatId].paymentMethodChoice = method;
+      userStates[chatId].awaiting = 'payout_first_name';
+      return bot.sendMessage(chatId, t(chatId,'payout_name_first_prompt'), { parse_mode: 'Markdown' });
     }
 
     if (data.startsWith('payout_')) {
+      // Happens after we asked Skrill/Neteller choice (post-name collection)
       const method = data.split('_')[1];
       const name = method.charAt(0).toUpperCase() + method.slice(1);
       userStates[chatId].paymentMethod = name;
@@ -708,13 +689,14 @@ async function generateDepositAddress(chatId) {
 
     const paymentMethodForCustom = state.paymentMethod || 'Unknown';
     const orderNumber = generateOrderNumber();
+    const beneficiaryFullName = `${state.payoutFirstName || ''} ${state.payoutLastName || ''}`.trim();
 
     const transactionOptions = {
       currency1: coin,
       currency2: coinCurrency,
       amount: state.amount,
       buyer_email: BUYER_REFUND_EMAIL,
-      custom: `Order: ${orderNumber} | ${coin}/${net} | Payout to ${paymentMethodForCustom}: ${state.paymentDetails}`,
+      custom: `Order: ${orderNumber} | ${coin}/${net} | Beneficiary: ${beneficiaryFullName} | Payout to ${paymentMethodForCustom}: ${state.paymentDetails}`,
       item_name: `Sell ${state.amount} ${coin} for ${state.fiat}`,
       ipn_url: 'YOUR_IPN_WEBHOOK_URL'
     };
@@ -729,6 +711,8 @@ async function generateDepositAddress(chatId) {
       coin,
       paymentMethod: paymentMethodForCustom,
       paymentDetails: state.paymentDetails,
+      payoutFirstName: state.payoutFirstName || '',
+      payoutLastName: state.payoutLastName || '',
       coinpaymentsTxnId: result.txn_id,
       depositAddress: result.address,
       timestamp: new Date().toISOString()
@@ -745,7 +729,7 @@ async function generateDepositAddress(chatId) {
       I18N[ULang(chatId)].address_ready(
         orderNumber, result.txn_id, result.amount, coin, net, result.address,
         paymentMethodForCustom, state.paymentDetails
-      ),
+      ) + `\n\n*Beneficiary:* ${beneficiaryFullName}`,
       { parse_mode: 'Markdown' }
     );
     delete userStates[chatId];
@@ -761,6 +745,8 @@ async function generateDepositAddress(chatId) {
  *  MESSAGE HANDLER
  * ──────────────────────────────────────────────────────────────────────────────
  */
+const nameOk = s => /^[\p{L}\p{M}'.\-\s]{2,}$/u.test((s||'').trim());
+
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text || '';
@@ -824,6 +810,7 @@ ${t(chatId,'tx_found_title')}
 *Network:* ${tnx.network}
 *Currency:* ${tnx.fiat}
 *Payment:* ${tnx.paymentMethod}
+*Beneficiary:* ${tnx.payoutFirstName || ''} ${tnx.payoutLastName || ''}
 *Status:* ${tnx.status}
 *Date:* ${new Date(tnx.timestamp).toLocaleString()}
 *Deposit:* \`${tnx.depositAddress}\`
@@ -837,6 +824,81 @@ ${t(chatId,'tx_found_title')}
     }
     delete userStates[chatId];
     return;
+  }
+
+  // NEW — Beneficiary Name collection
+  if (st.awaiting === 'payout_first_name') {
+    const first = (text || '').trim();
+    if (!nameOk(first)) return bot.sendMessage(chatId, '❌ Please enter a valid first name (letters, spaces, -.\').');
+    userStates[chatId].payoutFirstName = first;
+    userStates[chatId].awaiting = 'payout_last_name';
+    return bot.sendMessage(chatId, t(chatId,'payout_name_last_prompt'), { parse_mode: 'Markdown' });
+  }
+
+  if (st.awaiting === 'payout_last_name') {
+    const last = (text || '').trim();
+    if (!nameOk(last)) return bot.sendMessage(chatId, '❌ Please enter a valid last name (letters, spaces, -.\').');
+    userStates[chatId].payoutLastName = last;
+    userStates[chatId].awaiting = null;
+
+    const method = userStates[chatId].paymentMethodChoice;
+
+    switch (method) {
+      case 'wise':
+        userStates[chatId].paymentMethod = 'Wise';
+        userStates[chatId].awaiting = 'wise_details';
+        return bot.sendMessage(chatId, t(chatId,'wise_prompt'), { parse_mode: 'Markdown' });
+
+      case 'revolut':
+        userStates[chatId].paymentMethod = 'Revolut';
+        userStates[chatId].awaiting = 'revolut_details';
+        return bot.sendMessage(chatId, t(chatId,'revolut_prompt'), { parse_mode: 'Markdown' });
+
+      case 'paypal':
+        userStates[chatId].paymentMethod = 'PayPal';
+        userStates[chatId].awaiting = 'paypal_details';
+        return bot.sendMessage(chatId, t(chatId,'paypal_prompt'), { parse_mode: 'Markdown' });
+
+      case 'card':
+        userStates[chatId].paymentMethod = 'Card';
+        userStates[chatId].awaiting = 'card_details';
+        return bot.sendMessage(chatId, t(chatId,'card_prompt'), { parse_mode: 'Markdown' });
+
+      case 'payeer':
+        userStates[chatId].paymentMethod = 'Payeer';
+        userStates[chatId].awaiting = 'payeer_details';
+        return bot.sendMessage(chatId, t(chatId,'payeer_prompt'), { parse_mode: 'Markdown' });
+
+      case 'alipay':
+        userStates[chatId].paymentMethod = 'Alipay';
+        userStates[chatId].awaiting = 'alipay_details';
+        return bot.sendMessage(chatId, t(chatId,'alipay_prompt'), { parse_mode: 'Markdown' });
+
+      case 'skrill':
+        // Ask user to pick between Skrill and Neteller, then proceed
+        return bot.sendMessage(chatId, t(chatId,'skrill_or_neteller'), {
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: [
+            [{ text: t(chatId,'pick_skrill'), callback_data: 'payout_skrill' }],
+            [{ text: t(chatId,'pick_neteller'), callback_data: 'payout_neteller' }],
+            [{ text: t(chatId,'back_menu'), callback_data: 'menu' }],
+          ] }
+        });
+
+      case 'bank':
+        // Ask region now that we have names
+        return bot.sendMessage(chatId, t(chatId,'bank_region'), {
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: [
+            [{ text: t(chatId,'pick_region_eu'), callback_data: 'bank_eu' }],
+            [{ text: t(chatId,'pick_region_us'), callback_data: 'bank_us' }],
+            [{ text: t(chatId,'back_menu'), callback_data: 'menu' }],
+          ] }
+        });
+
+      default:
+        return bot.sendMessage(chatId, '❌ Unknown payout method. Send /start to begin again.');
+    }
   }
 
   // User — amount entry
@@ -881,7 +943,7 @@ ${t(chatId,'tx_found_title')}
     return;
   }
 
-  // Collect payout details
+  // Collect payout details (after names)
   if ([
     'wise_details','revolut_details','paypal_details','card_details',
     'payeer_details','alipay_details','skrill_neteller_details',
@@ -902,6 +964,7 @@ ${t(chatId,'tx_found_title')}
 *Currency to Receive:* ${userStates[chatId].fiat}
 *Amount to Receive (current):* ${fiatToReceive.toFixed(2)} ${userStates[chatId].fiat}
 *Payment Method:* ${userStates[chatId].paymentMethod}
+*Beneficiary Name:* ${userStates[chatId].payoutFirstName} ${userStates[chatId].payoutLastName}
 *Payment Details:*
 \`${userStates[chatId].paymentDetails}\``, {
       parse_mode: 'Markdown',
